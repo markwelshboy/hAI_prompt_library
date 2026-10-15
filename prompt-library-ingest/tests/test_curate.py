@@ -1,12 +1,17 @@
 from hearmeman_curate import transform_prompt
 
 
-def prompt(text: str, ident: str = "p1") -> dict:
+def prompt(
+    text: str,
+    ident: str = "p1",
+    collection: str = "Test",
+    collection_slug: str = "test",
+) -> dict:
     return {
         "id": ident,
         "source_index": 0,
-        "collection": "Test",
-        "collection_slug": "test",
+        "collection": collection,
+        "collection_slug": collection_slug,
         "character": "Alice",
         "model": "nano-banana-2",
         "source_url": "https://example.test/pack/",
@@ -111,7 +116,7 @@ def test_reference_generation_instruction_becomes_separate_slot():
     assert out["curation"]["review_required"] is False
 
 
-def test_second_reference_product_is_preserved_and_reviewed():
+def test_second_reference_product_becomes_product_slot_without_losing_action():
     src = (
         "A casual gym athleisure selfie of a woman, holding the exact tumbler product "
         "shown in the second reference image, product kept identical, held clearly "
@@ -119,13 +124,72 @@ def test_second_reference_product_is_preserved_and_reviewed():
     )
     out = transform_prompt(prompt(src))
 
-    assert "second reference image" in out["prompt_template"]
-    assert out["slots"]["reference_product"]["status"] == "review"
-    assert "second_reference_product" in out["curation"]["review_reasons"]
-    assert "residual_reference_language" in out["curation"]["review_reasons"]
+    assert "holding [[PRODUCT]], held clearly toward camera" in out["prompt_template"]
+    assert "second reference image" not in out["prompt_template"].casefold()
+    assert out["slots"]["product"]["status"] == "auto"
+    item = out["slots"]["product"]["items"][0]
+    assert item["product_type"] == "tumbler"
+    assert item["reference_source"] == "second_reference_image"
+    assert out["curation"]["review_required"] is False
 
 
-def test_missing_subject_is_reviewed_not_guessed():
+def test_product_image_sneakers_become_product_slot():
+    src = (
+        f"A woman. {IDENTITY} She wears the exact white low-top leather sneakers "
+        "from the product image, kept identical (white laces, white rubber soles), "
+        "with cuffed cobalt-blue barrel jeans."
+    )
+    out = transform_prompt(prompt(src))
+
+    assert "She wears [[PRODUCT]], with cuffed" in out["prompt_template"]
+    assert "product image" not in out["prompt_template"].casefold()
+    item = out["slots"]["product"]["items"][0]
+    assert item["product_type"] == "sneakers"
+    assert item["reference_source"] == "product_image"
+    assert "white laces" in item["generic_description"]
+    assert out["curation"]["review_required"] is False
+
+
+def test_product_image_jewelry_becomes_product_slot():
+    src = (
+        f"Close-up selfie of a woman. {IDENTITY} She wears the gold pendant necklace "
+        "from the product image, a thin chain with a small round clear-stone charm "
+        "sitting at her collarbone, plus the matching small gold hoop earrings with tiny "
+        "clear stones, kept exactly as shown. Outfit is a red tank."
+    )
+    out = transform_prompt(prompt(src))
+
+    assert "She wears [[PRODUCT]]. Outfit is a red tank." in out["prompt_template"]
+    assert "product image" not in out["prompt_template"].casefold()
+    item = out["slots"]["product"]["items"][0]
+    assert item["product_type"] == "jewelry"
+    assert item["reference_source"] == "product_image"
+    assert "matching small gold hoop earrings" in item["generic_description"]
+    assert out["curation"]["review_required"] is False
+
+
+def test_ugc_tote_missing_subject_gets_explicit_collection_rule():
+    src = (
+        "A street-style full-body mirror selfie carrying the tote on her shoulder, "
+        "holding the exact tote-bag product shown in the second reference image, "
+        f"product kept identical, held clearly toward camera. {IDENTITY}"
+    )
+    out = transform_prompt(
+        prompt(
+            src,
+            collection="UGC Product Spotlight",
+            collection_slug="ugc-product-spotlight",
+        )
+    )
+
+    assert "mirror selfie of [[SUBJECT]] carrying" in out["prompt_template"]
+    assert "holding [[PRODUCT]], held clearly toward camera" in out["prompt_template"]
+    assert out["slots"]["subject"]["status"] == "inserted"
+    assert out["slots"]["subject"]["original"] is None
+    assert out["curation"]["review_required"] is False
+
+
+def test_missing_subject_outside_known_rule_is_reviewed_not_guessed():
     src = f"Editorial fashion image at night. {IDENTITY}"
     out = transform_prompt(prompt(src))
 
