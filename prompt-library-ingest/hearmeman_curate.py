@@ -30,11 +30,11 @@ REFERENCE_IDENTITY_PLACEHOLDER = "[[REFERENCE_IDENTITY]]"
 REFERENCE_IDENTITY_SCOPE_PLACEHOLDER = "[[REFERENCE_IDENTITY_SCOPE]]"
 REFERENCE_GENERATION_PLACEHOLDER = "[[REFERENCE_GENERATION]]"
 
-# This exact semantic clause accounts for the overwhelming majority of the
-# library, including a small number of prompts where it is embedded inline in a
-# longer sentence rather than standing alone.
+# This semantic clause accounts for almost the whole library.  A tiny live-site
+# variant uses "preserving" inline rather than imperative "Preserve"; both mean
+# the same thing and belong in the same semantic slot.
 IDENTITY_RE = re.compile(
-    r"preserve\s+the\s+character\s+identity\s+from\s+the\s+reference\s+image,\s*"
+    r"preserv(?:e|ing)\s+the\s+character\s+identity\s+from\s+the\s+reference\s+image,\s*"
     r"keeping\s+their\s+exact\s+hair\s+color,\s*hairstyle,\s*eye\s+color,\s*"
     r"skin\s+tone,\s*face\s+shape,\s*and\s+body\s+shape\.?",
     re.IGNORECASE,
@@ -51,6 +51,24 @@ REFERENCE_GENERATION_RE = re.compile(
 
 SUBJECT_REFERENCE_SPLIT_RE = re.compile(
     r"\s+from\s+the\s+reference\s+image\b", re.IGNORECASE
+)
+
+# A handful of source prompts establish the subject once, then later repeat a
+# second identity-scoped subject phrase.  We must not globally replace every
+# occurrence of "woman", but a phrase explicitly tied to "the reference image"
+# is safe to normalize wherever it occurs.
+RESIDUAL_SUBJECT_REFERENCE_RE = re.compile(
+    r"\b(?P<subject>"
+    r"(?:(?:one|an?|the|single|a\s+single)\s+)?"
+    r"(?:fictional\s+)?"
+    r"(?:young\s+)?"
+    r"(?:adult\s+)?"
+    r"woman"
+    r")"
+    r"(?P<scope>\s+from\s+the\s+reference\s+image"
+    r"(?:,\s*used\s+(?:only\s+)?for\s+[^.;\n]+)?"
+    r")",
+    re.IGNORECASE,
 )
 
 
@@ -95,14 +113,62 @@ def _subject_transform(text: str) -> tuple[str, dict[str, Any] | None, dict[str,
         "placeholder": SUBJECT_PLACEHOLDER,
         "original": subject_source,
         "source_candidate": candidate,
+        "additional_originals": [],
         "status": "auto",
     }
     return transformed, subject_slot, scope_slot
 
 
+def _replace_residual_subject_reference_scopes(
+    text: str,
+) -> tuple[str, list[str], list[str]]:
+    """Normalize later subject phrases explicitly scoped to a reference image.
+
+    This is deliberately narrower than SUBJECT_RE: only phrases containing
+    ``from the reference image`` qualify, so ordinary later uses of "woman" are
+    untouched.
+    """
+    subject_originals: list[str] = []
+    scope_originals: list[str] = []
+
+    def repl(match: re.Match[str]) -> str:
+        subject_originals.append(match.group("subject").strip())
+        scope_originals.append(match.group("scope").strip())
+        return f"{SUBJECT_PLACEHOLDER} {REFERENCE_IDENTITY_SCOPE_PLACEHOLDER}"
+
+    return RESIDUAL_SUBJECT_REFERENCE_RE.sub(repl, text), subject_originals, scope_originals
+
+
 def transform_prompt(prompt: dict[str, Any]) -> dict[str, Any]:
     original = prompt["prompt_original"]
     template, subject_slot, subject_scope_slot = _subject_transform(original)
+
+    # Some prompts contain a second identity-scoped subject phrase later in the
+    # same prompt.  Normalize only those explicit reference-linked occurrences.
+    template, extra_subjects, extra_scopes = _replace_residual_subject_reference_scopes(template)
+    if extra_subjects:
+        if subject_slot is None:
+            subject_slot = {
+                "placeholder": SUBJECT_PLACEHOLDER,
+                "original": extra_subjects[0],
+                "source_candidate": f"{extra_subjects[0]} {extra_scopes[0]}",
+                "additional_originals": extra_subjects[1:],
+                "status": "auto",
+            }
+            extra_subjects = []
+            extra_scopes = extra_scopes[1:]
+        else:
+            subject_slot.setdefault("additional_originals", []).extend(extra_subjects)
+
+    if extra_scopes:
+        if subject_scope_slot is None:
+            subject_scope_slot = {
+                "placeholder": REFERENCE_IDENTITY_SCOPE_PLACEHOLDER,
+                "original": list(extra_scopes),
+                "status": "auto",
+            }
+        else:
+            subject_scope_slot["original"].extend(extra_scopes)
 
     template, identity_originals = _replace_matches(
         template, IDENTITY_RE, REFERENCE_IDENTITY_PLACEHOLDER
