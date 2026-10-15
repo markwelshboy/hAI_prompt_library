@@ -1,11 +1,13 @@
-# HearmemanAI prompt-library ingest — Phase 1
+# HearmemanAI prompt library
 
-This is the **non-mutating ingest/audit stage** for a personal prompt library.
-It snapshots the public HearmemanAI PROmpt pages, parses the visible exact-prompt
-fallback into JSON, and inventories subject/reference-image wording before any
-normalization rules are applied.
+This repository now has two deliberately separate stages:
 
-## Output layout
+1. **Phase 1 — immutable ingest/audit**: snapshot HearmemanAI, parse exact source prompts, and inventory subject/reference patterns.
+2. **Phase 2 — curated templates**: derive model-neutral prompt templates with semantic placeholders while retaining `prompt_original` unchanged.
+
+Rendering/export for ComfyUI is intentionally a later stage.  We first validate the transformations across the complete library.
+
+## Phase 1 output
 
 ```text
 prompt-library/
@@ -22,7 +24,7 @@ prompt-library/
     └── pattern_audit.md
 ```
 
-Each prompt record preserves:
+Each source prompt record preserves:
 
 - collection and collection slug
 - source character name
@@ -30,56 +32,117 @@ Each prompt record preserves:
 - source pack URL
 - source image URL/alt text where available
 - prompt text as `prompt_original`
-- the parsed source text blocks as `prompt_blocks_original`
+- parsed source text blocks as `prompt_blocks_original`
 - SHA-256 of the prompt
 - deterministic prompt ID
 
-No `[[SUBJECT]]` or reference-image replacement is done in Phase 1.
+No placeholder replacement is performed in Phase 1.
 
-## Run
+## Run Phase 1
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-python hearmeman_ingest.py all --out ./prompt-library
+python3 hearmeman_ingest.py all --out ./prompt-library
 ```
 
 To force a fresh web snapshot:
 
 ```bash
-python hearmeman_ingest.py all --out ./prompt-library --refresh
+python3 hearmeman_ingest.py all --out ./prompt-library --refresh
 ```
 
-After the first scrape, the audit can be regenerated entirely from the local
-JSON without contacting the site:
+After the first scrape, regenerate the audit entirely from local JSON:
 
 ```bash
-python hearmeman_ingest.py audit --out ./prompt-library
+python3 hearmeman_ingest.py audit --out ./prompt-library
 ```
 
-## Validation gates
+## Phase 1 validation gates
 
-The script compares:
+The ingest compares:
 
 1. the library's declared total prompt count with the parsed total;
 2. each pack's declared prompt count with its parsed count;
 3. prompt-card image count with parsed prompt count;
 4. image-alt character with prompt-header character.
 
-Any discrepancy is emitted as a warning and retained in `library.json`. Do not
-start Phase 2 normalization until the declared/parsed totals match or every
-mismatch has been understood.
+Do not normalize until the declared/parsed totals agree or every mismatch is understood.  The current validated snapshot is **188 prompts across 35 collections**.
 
-## Phase 2 (intentionally not implemented yet)
+# Phase 2 — curated/template layer
 
-Use `reports/pattern_audit.*` to define explicit transformations such as:
+Run:
 
-- source subject phrase -> `[[SUBJECT]]`
-- identity-preservation clause -> semantic reference slot
-- reference-compositing instructions -> semantic reference slot
-- second-reference/product instructions -> separate product-reference slot
+```bash
+python3 hearmeman_curate.py --out ./prompt-library
+```
 
-The planned curated layer should retain `prompt_original` unchanged and add a
-separate template/rendering representation.
+This reads:
+
+```text
+prompt-library/source/hearmemanai/library.json
+```
+
+and writes:
+
+```text
+prompt-library/
+├── curated/
+│   ├── library.json
+│   └── collections/
+│       └── <collection>.json
+└── reports/
+    ├── transformation_report.json
+    └── transformation_report.md
+```
+
+`prompt_original` is copied unchanged into every curated record.  Automatic transformations are written only to `prompt_template`.
+
+## Semantic placeholders
+
+Phase 2 currently uses:
+
+- `[[SUBJECT]]` — the source subject phrase, to be rendered later with the desired subject/LoRA trigger.
+- `[[REFERENCE_IDENTITY]]` — the standard "Preserve the character identity..." instruction.
+- `[[REFERENCE_IDENTITY_SCOPE]]` — subject-attached wording such as `from the reference image, used only for identity...`.
+- `[[REFERENCE_GENERATION]]` — instructions that the reference is identity-only and must not be pasted/composited into the result.
+- `[[REFERENCE_PRODUCT]]` — **reserved, but not auto-inserted yet**.
+
+The seven known second-reference/product prompts are intentionally left intact and placed in the review queue.  Their reference wording is mixed with useful product/action/scene instructions, so deleting the whole sentence automatically would lose information.
+
+## Curation metadata
+
+Every curated record includes editable curation state:
+
+```json
+{
+  "keep": null,
+  "reviewed": false,
+  "favorite": false,
+  "notes": "",
+  "review_required": false,
+  "review_reasons": []
+}
+```
+
+`keep: null` means the prompt has not yet been manually accepted/rejected.
+
+## Phase 2 acceptance step
+
+After generating the curated layer, inspect:
+
+```bash
+cat prompt-library/reports/transformation_report.md
+```
+
+Prompts marked `auto_ready` are candidates for automatic export.  Prompts in the review queue should be inspected before we create Krea2/Qwen renderers or ComfyUI batch exports.
+
+## Tests
+
+```bash
+python3 -m pytest -q
+```
+
+The tests cover pack discovery/parsing as well as the Phase-2 transformations, including subject-attached reference scope, inline identity clauses, multi-panel reference instructions, product-reference review handling, and missing-subject review handling.
