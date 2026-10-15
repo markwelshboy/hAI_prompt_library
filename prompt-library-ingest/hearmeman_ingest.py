@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI facade for the HearmemanAI prompt-library ingest tool.
 
-The implementation lives in :mod:`hearmeman_ingest_core`.  This module carries
+The implementation lives in :mod:`hearmeman_ingest_core`. This module carries
 small live-site adapters where the public site's HTML shape differs from the
 minimal parser fixtures in the core implementation.
 """
@@ -17,14 +17,14 @@ import hearmeman_ingest_core as _core
 from hearmeman_ingest_core import *  # noqa: F401,F403 - preserve public API
 
 
-_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+_MODEL_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 
 def discover_pack_urls(html: str, base_url: str = LIBRARY_URL) -> list[str]:
     """Return only concrete HearmemanAI pack collection URLs.
 
     The library page links both to ``/prompts/packs/`` (the pack index) and to
-    individual collections.  The index is not itself a pack. Nested paths below
+    individual collections. The index is not itself a pack. Nested paths below
     a pack are ignored as well.
     """
     soup = BeautifulSoup(html, "html.parser")
@@ -50,31 +50,96 @@ def discover_pack_urls(html: str, base_url: str = LIBRARY_URL) -> list[str]:
 
 
 def _parse_prompt_heading(text: str) -> tuple[str, str, str] | None:
-    """Parse ``Collection · Character · model`` from a rendered heading.
+    """Parse ``Collection · Character · model`` from rendered fallback text.
 
-    The real site renders each visible heading from nested elements.  Parsing
-    the heading element's combined text avoids depending on ``stripped_strings``
-    yielding the entire heading as one token.  Right-side parsing is important
-    because some collection names themselves contain `` · ``.
+    Parse from the right because a collection name itself may contain a middle
+    dot. The model value in the site's fallback section is a compact slug such
+    as ``gpt-image-2`` or ``nano-banana-2``; validating that final token prevents
+    a candidate from swallowing the first sentence of the prompt body.
     """
     text = compact_ws(text)
     parts = [compact_ws(p) for p in re.split(r"\s*·\s*", text)]
     if len(parts) < 3 or not all(parts):
         return None
+
     collection = HEADER_SEP.join(parts[:-2])
     character = parts[-2]
     model = parts[-1]
+
+    if not _MODEL_TOKEN_RE.fullmatch(model):
+        return None
+
     return collection, character, model
 
 
-def parse_pack(html: str, url: str) -> tuple[dict, list[str]]:
-    """Parse one pack using DOM-level headings and paragraph blocks.
+def _consume_prompt_header(
+    tokens: list[str],
+    start: int,
+    expected_collection: str,
+    max_tokens: int = 12,
+) -> tuple[tuple[str, str, str], int] | None:
+    """Recognize a prompt header even when HTML splits it across text nodes.
 
-    On the live site, prompt headings are visually a single string but are
-    composed from nested HTML elements.  The original parser iterated
-    ``soup.stripped_strings`` and therefore never saw a complete header token.
-    This parser combines each heading's descendant text first, then accumulates
-    paragraph blocks until the next prompt heading.
+    The live fallback markup has changed shape over time. Sometimes the whole
+    ``Collection · Character · model`` string is one text node; sometimes each
+    component and middle-dot separator is emitted as a separate node. Build
+    progressively wider candidates and accept the first valid header whose
+    collection matches the pack's H1.
+    """
+    expected = compact_ws(expected_collection).casefold()
+    limit = min(len(tokens), start + max_tokens)
+
+    for end in range(start + 1, limit + 1):
+        candidate = " ".join(tokens[start:end])
+        parsed = _parse_prompt_heading(candidate)
+        if parsed is None:
+            continue
+
+        collection, _character, _model = parsed
+        if compact_ws(collection).casefold() != expected:
+            continue
+
+        return parsed, end - start
+
+    return None
+
+
+def _fallback_tokens(soup: BeautifulSoup) -> list[str]:
+    """Return normalized visible-text tokens from the fallback prompt section."""
+    tokens = [compact_ws(s) for s in soup.stripped_strings]
+
+    try:
+        start = tokens.index("Browse and copy prompts") + 1
+    except ValueError as exc:
+        raise ValueError("Could not find fallback prompt section") from exc
+
+    result: list[str] = []
+    for token in tokens[start:]:
+        if token in STOP_MARKERS:
+            break
+
+        if token in SKIP_TOKENS:
+            continue
+
+        # The UI anchor is normally a separate text node, but tolerate markup
+        # that concatenates it with the next fallback header.
+        if token.startswith("Open this collection"):
+            token = token[len("Open this collection"):].strip()
+            if not token:
+                continue
+
+        result.append(token)
+
+    return result
+
+
+def parse_pack(html: str, url: str) -> tuple[dict, list[str]]:
+    """Parse one pack from the site's non-JavaScript fallback text.
+
+    Do not depend on prompt headers being specific DOM elements. Instead scan
+    normalized text nodes after ``Browse and copy prompts`` and recognize each
+    header by its ``Collection · Character · model`` grammar. This preserves
+    multiline prompt blocks while tolerating nested spans/divs around headers.
     """
     soup = BeautifulSoup(html, "html.parser")
     h1 = soup.find("h1")
@@ -89,13 +154,10 @@ def parse_pack(html: str, url: str) -> tuple[dict, list[str]]:
     count = declared_count(page_text)
     images = prompt_images(soup)
 
-    browse_heading = None
-    for heading in soup.find_all(_HEADING_TAGS):
-        if compact_ws(heading.get_text(" ", strip=True)) == "Browse and copy prompts":
-            browse_heading = heading
-            break
-    if browse_heading is None:
-        raise ValueError(f"Could not find fallback prompt section in {url}")
+    try:
+        tokens = _fallback_tokens(soup)
+    except ValueError as exc:
+        raise ValueError(f"Could not find fallback prompt section in {url}") from exc
 
     records: list[PromptRecord] = []
     warnings: list[str] = []
@@ -153,44 +215,29 @@ def parse_pack(html: str, url: str) -> tuple[dict, list[str]]:
         current_header = None
         current_blocks = []
 
-    # Only headings and paragraphs matter here. Ignoring anchors means UI text
-    # such as "View prompt" cannot leak into the prompt body.
-    for element in browse_heading.find_all_next([*_HEADING_TAGS, "p"]):
-        text = compact_ws(element.get_text(" ", strip=True))
-        if not text:
-            continue
-
-        if text in STOP_MARKERS:
+    i = 0
+    while i < len(tokens):
+        consumed = _consume_prompt_header(tokens, i, page_title)
+        if consumed is not None:
             flush()
-            break
-
-        if element.name in _HEADING_TAGS:
-            header = _parse_prompt_heading(text)
-            if header is not None:
-                flush()
-                current_header = header
+            current_header, width = consumed
+            i += width
             continue
 
-        if element.name == "p" and current_header is not None:
-            if text in SKIP_TOKENS:
-                continue
-            current_blocks.append(text)
-    else:
-        flush()
+        if current_header is not None:
+            current_blocks.append(tokens[i])
+        i += 1
+
+    flush()
 
     if not records:
         warnings.append(
-            f"{page_title}: fallback section found but no prompt headings parsed"
+            f"{page_title}: fallback section found but no prompt headers parsed"
         )
 
     collections = {r.collection for r in records}
     if records and len(collections) == 1:
         collection_name = records[0].collection
-        if page_title.casefold() != collection_name.casefold():
-            warnings.append(
-                f"{page_title}: <h1> differs from prompt collection "
-                f"{collection_name!r}"
-            )
     else:
         collection_name = page_title
         if len(collections) > 1:
