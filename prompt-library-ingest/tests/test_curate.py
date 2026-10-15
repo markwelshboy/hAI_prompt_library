@@ -133,6 +133,26 @@ def test_second_reference_product_becomes_product_slot_without_losing_action():
     assert out["curation"]["review_required"] is False
 
 
+def test_second_reference_product_preserves_intervening_pose_text():
+    src = (
+        f"A getting-ready vanity selfie of a woman. {IDENTITY} "
+        "She holds the exact perfume product shown in the second reference image "
+        "up near the side of her neck as if about to spray, product kept identical, "
+        "held clearly toward camera."
+    )
+    out = transform_prompt(prompt(src))
+
+    assert (
+        "She holds [[PRODUCT]] up near the side of her neck as if about to spray, "
+        "held clearly toward camera."
+    ) in out["prompt_template"]
+    assert "second reference image" not in out["prompt_template"].casefold()
+    item = out["slots"]["product"]["items"][0]
+    assert item["product_type"] == "perfume"
+    assert item["reference_source"] == "second_reference_image"
+    assert out["curation"]["review_required"] is False
+
+
 def test_product_image_sneakers_become_product_slot():
     src = (
         f"A woman. {IDENTITY} She wears the exact white low-top leather sneakers "
