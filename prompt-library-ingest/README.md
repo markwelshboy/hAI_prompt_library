@@ -48,6 +48,12 @@ pip install -r requirements.txt
 python3 hearmeman_ingest.py all --out ./prompt-library
 ```
 
+For development/testing, install the dev requirements instead (they include the runtime requirements plus pytest):
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 To force a fresh web snapshot:
 
 ```bash
@@ -105,8 +111,8 @@ prompt-library/
 Phase 2 currently uses:
 
 - `[[SUBJECT]]` — the source subject phrase, to be rendered later with the desired subject/LoRA trigger.
-- `[[REFERENCE_IDENTITY]]` — the standard "Preserve the character identity..." instruction.
-- `[[REFERENCE_IDENTITY_SCOPE]]` — subject-attached wording such as `from the reference image, used only for identity...`.
+- `[[REFERENCE_IDENTITY]]` — the standard "Preserve the character identity..." instruction, including the inline `preserving...` variant.
+- `[[REFERENCE_IDENTITY_SCOPE]]` — subject-attached wording such as `from the reference image, used only for identity...`. Later repeated subject/reference phrases are normalized too, but ordinary later uses of `woman` are not globally replaced.
 - `[[REFERENCE_GENERATION]]` — instructions that the reference is identity-only and must not be pasted/composited into the result.
 - `[[REFERENCE_PRODUCT]]` — **reserved, but not auto-inserted yet**.
 
@@ -141,8 +147,16 @@ Prompts marked `auto_ready` are candidates for automatic export.  Prompts in the
 
 ## Tests
 
+Install the development dependencies once:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Then run:
+
 ```bash
 python3 -m pytest -q
 ```
 
-The tests cover pack discovery/parsing as well as the Phase-2 transformations, including subject-attached reference scope, inline identity clauses, multi-panel reference instructions, product-reference review handling, and missing-subject review handling.
+The tests cover pack discovery/parsing as well as the Phase-2 transformations, including subject-attached reference scope, inline identity clauses, the inline `preserving...` identity variant, later repeated identity-scoped subject phrases, multi-panel reference instructions, product-reference review handling, and missing-subject review handling.
