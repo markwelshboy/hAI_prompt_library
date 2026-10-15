@@ -62,20 +62,19 @@ RESIDUAL_SUBJECT_REFERENCE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Seven UGC prompts use this highly regular form. Only the product-identity
-# fragment is replaced; presentation language such as "held clearly toward
-# camera" remains in the prompt body.
+# The UGC pack normally places "product kept identical" immediately after the
+# reference-image phrase, but the perfume prompt inserts pose/action wording
+# between them. Capture that intervening wording and put it back after
+# [[PRODUCT]] so only the reference mechanics disappear.
 SECOND_REFERENCE_PRODUCT_RE = re.compile(
     r"\bthe\s+exact\s+"
     r"(?P<product>[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z0-9-]+){0,3})\s+"
-    r"product\s+shown\s+in\s+the\s+second\s+reference\s+image,\s*"
-    r"product\s+kept\s+identical\b",
+    r"product\s+shown\s+in\s+the\s+second\s+reference\s+image"
+    r"(?P<presentation>[^.]{0,180}?)"
+    r",\s*product\s+kept\s+identical\b",
     re.IGNORECASE,
 )
 
-# Two additional UGC prompts use "product image" rather than "second reference
-# image". They are deliberately specific because their source wording bundles
-# useful descriptive detail with the reference constraint.
 SNEAKER_PRODUCT_IMAGE_RE = re.compile(
     r"\bthe\s+exact\s+"
     r"(?P<product>white\s+low-top\s+leather\s+sneakers)\s+"
@@ -92,9 +91,6 @@ JEWELRY_PRODUCT_IMAGE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# One source prompt (the tote UGC prompt) describes a mirror selfie and only
-# later uses pronouns; it never names the subject explicitly. This targeted rule
-# inserts the subject slot without guessing across unrelated prompts.
 UGC_TOTE_SUBJECT_RE = re.compile(
     r"\bA\s+street-style\s+full-body\s+mirror\s+selfie"
     r"(?=\s+carrying\s+the\s+tote\s+on\s+her\s+shoulder\b)",
@@ -119,7 +115,6 @@ def _replace_matches(
 def _subject_transform(
     text: str,
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
-    """Replace the first subject declaration and separate any ref-image suffix."""
     match = SUBJECT_RE.search(text[:500])
     if not match:
         return text, None, None
@@ -154,7 +149,6 @@ def _subject_transform(
 def _replace_residual_subject_reference_scopes(
     text: str,
 ) -> tuple[str, list[str], list[str]]:
-    """Normalize later subject phrases explicitly scoped to a reference image."""
     subject_originals: list[str] = []
     scope_originals: list[str] = []
 
@@ -204,6 +198,7 @@ def _replace_products(text: str) -> tuple[str, list[dict[str, Any]]]:
 
     def second_reference_repl(match: re.Match[str]) -> str:
         product_type = _normalized_product_type(match.group("product"))
+        presentation = match.group("presentation") or ""
         items.append(
             {
                 "original": match.group(0),
@@ -212,7 +207,7 @@ def _replace_products(text: str) -> tuple[str, list[dict[str, Any]]]:
                 "reference_source": "second_reference_image",
             }
         )
-        return PRODUCT_PLACEHOLDER
+        return f"{PRODUCT_PLACEHOLDER}{presentation}"
 
     text = SECOND_REFERENCE_PRODUCT_RE.sub(second_reference_repl, text)
 
