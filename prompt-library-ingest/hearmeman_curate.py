@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Build the Phase-2 curated prompt library from a Phase-1 library.json.
 
-The source layer remains immutable.  This tool creates a separate curated layer
-with semantic placeholders and review metadata:
+The source layer remains immutable. This tool creates a separate curated layer
+with model-neutral semantic placeholders:
 
   [[SUBJECT]]
   [[REFERENCE_IDENTITY]]
   [[REFERENCE_IDENTITY_SCOPE]]
   [[REFERENCE_GENERATION]]
+  [[PRODUCT]]
 
-Second-reference/product wording is intentionally *not* rewritten yet.  Those
-few prompts are retained verbatim in the template and sent to a review queue so
-scene/action language is not accidentally discarded.
+Reference mechanics are retained as structured slot metadata so later renderers
+can choose reference-aware wording (for Qwen-like workflows) or generic/custom
+values (for LoRA/Krea-style workflows) without mutating ``prompt_original``.
 """
 from __future__ import annotations
 
@@ -29,10 +30,8 @@ SUBJECT_PLACEHOLDER = "[[SUBJECT]]"
 REFERENCE_IDENTITY_PLACEHOLDER = "[[REFERENCE_IDENTITY]]"
 REFERENCE_IDENTITY_SCOPE_PLACEHOLDER = "[[REFERENCE_IDENTITY_SCOPE]]"
 REFERENCE_GENERATION_PLACEHOLDER = "[[REFERENCE_GENERATION]]"
+PRODUCT_PLACEHOLDER = "[[PRODUCT]]"
 
-# This semantic clause accounts for almost the whole library.  A tiny live-site
-# variant uses "preserving" inline rather than imperative "Preserve"; both mean
-# the same thing and belong in the same semantic slot.
 IDENTITY_RE = re.compile(
     r"preserv(?:e|ing)\s+the\s+character\s+identity\s+from\s+the\s+reference\s+image,\s*"
     r"keeping\s+their\s+exact\s+hair\s+color,\s*hairstyle,\s*eye\s+color,\s*"
@@ -40,10 +39,6 @@ IDENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The audit found a small family of multi-panel instructions beginning with
-# "Use the reference image ONLY..." and ending with an instruction not to
-# preserve/composite the source background.  Keep the original wording in the
-# slot, but make the template model-neutral.
 REFERENCE_GENERATION_RE = re.compile(
     r"Use\s+the\s+reference\s+image\s+ONLY\s+for\s+her\s+[^.]{1,700}?background\.",
     re.IGNORECASE,
@@ -53,10 +48,6 @@ SUBJECT_REFERENCE_SPLIT_RE = re.compile(
     r"\s+from\s+the\s+reference\s+image\b", re.IGNORECASE
 )
 
-# A handful of source prompts establish the subject once, then later repeat a
-# second identity-scoped subject phrase.  We must not globally replace every
-# occurrence of "woman", but a phrase explicitly tied to "the reference image"
-# is safe to normalize wherever it occurs.
 RESIDUAL_SUBJECT_REFERENCE_RE = re.compile(
     r"\b(?P<subject>"
     r"(?:(?:one|an?|the|single|a\s+single)\s+)?"
@@ -68,6 +59,45 @@ RESIDUAL_SUBJECT_REFERENCE_RE = re.compile(
     r"(?P<scope>\s+from\s+the\s+reference\s+image"
     r"(?:,\s*used\s+(?:only\s+)?for\s+[^.;\n]+)?"
     r")",
+    re.IGNORECASE,
+)
+
+# Seven UGC prompts use this highly regular form. Only the product-identity
+# fragment is replaced; presentation language such as "held clearly toward
+# camera" remains in the prompt body.
+SECOND_REFERENCE_PRODUCT_RE = re.compile(
+    r"\bthe\s+exact\s+"
+    r"(?P<product>[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z0-9-]+){0,3})\s+"
+    r"product\s+shown\s+in\s+the\s+second\s+reference\s+image,\s*"
+    r"product\s+kept\s+identical\b",
+    re.IGNORECASE,
+)
+
+# Two additional UGC prompts use "product image" rather than "second reference
+# image". They are deliberately specific because their source wording bundles
+# useful descriptive detail with the reference constraint.
+SNEAKER_PRODUCT_IMAGE_RE = re.compile(
+    r"\bthe\s+exact\s+"
+    r"(?P<product>white\s+low-top\s+leather\s+sneakers)\s+"
+    r"from\s+the\s+product\s+image,\s*kept\s+identical"
+    r"(?P<details>\s*\([^)]*\))?",
+    re.IGNORECASE,
+)
+
+JEWELRY_PRODUCT_IMAGE_RE = re.compile(
+    r"\bthe\s+(?P<product>gold\s+pendant\s+necklace)\s+from\s+the\s+product\s+image,\s*"
+    r"(?P<details>a\s+thin\s+chain\s+with\s+a\s+small\s+round\s+clear-stone\s+charm\s+"
+    r"sitting\s+at\s+her\s+collarbone,\s*plus\s+the\s+matching\s+small\s+gold\s+hoop\s+"
+    r"earrings\s+with\s+tiny\s+clear\s+stones),\s*kept\s+exactly\s+as\s+shown",
+    re.IGNORECASE,
+)
+
+# One source prompt (the tote UGC prompt) describes a mirror selfie and only
+# later uses pronouns; it never names the subject explicitly. This targeted rule
+# inserts the subject slot without guessing across unrelated prompts.
+UGC_TOTE_SUBJECT_RE = re.compile(
+    r"\bA\s+street-style\s+full-body\s+mirror\s+selfie"
+    r"(?=\s+carrying\s+the\s+tote\s+on\s+her\s+shoulder\b)",
     re.IGNORECASE,
 )
 
@@ -86,7 +116,9 @@ def _replace_matches(
     return pattern.sub(repl, text), originals
 
 
-def _subject_transform(text: str) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
+def _subject_transform(
+    text: str,
+) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
     """Replace the first subject declaration and separate any ref-image suffix."""
     match = SUBJECT_RE.search(text[:500])
     if not match:
@@ -122,12 +154,7 @@ def _subject_transform(text: str) -> tuple[str, dict[str, Any] | None, dict[str,
 def _replace_residual_subject_reference_scopes(
     text: str,
 ) -> tuple[str, list[str], list[str]]:
-    """Normalize later subject phrases explicitly scoped to a reference image.
-
-    This is deliberately narrower than SUBJECT_RE: only phrases containing
-    ``from the reference image`` qualify, so ordinary later uses of "woman" are
-    untouched.
-    """
+    """Normalize later subject phrases explicitly scoped to a reference image."""
     subject_originals: list[str] = []
     scope_originals: list[str] = []
 
@@ -139,13 +166,99 @@ def _replace_residual_subject_reference_scopes(
     return RESIDUAL_SUBJECT_REFERENCE_RE.sub(repl, text), subject_originals, scope_originals
 
 
+def _insert_known_missing_subject(
+    prompt: dict[str, Any],
+    text: str,
+    subject_slot: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any] | None]:
+    if subject_slot is not None:
+        return text, subject_slot
+    if prompt.get("collection_slug") != "ugc-product-spotlight":
+        return text, None
+
+    transformed, count = UGC_TOTE_SUBJECT_RE.subn(
+        lambda m: f"{m.group(0)} of {SUBJECT_PLACEHOLDER}", text, count=1
+    )
+    if count != 1:
+        return text, None
+
+    return transformed, {
+        "placeholder": SUBJECT_PLACEHOLDER,
+        "original": None,
+        "source_candidate": None,
+        "additional_originals": [],
+        "status": "inserted",
+        "note": (
+            "Source tote prompt contains no explicit subject noun; inserted after "
+            "'street-style full-body mirror selfie' by a collection-specific rule."
+        ),
+    }
+
+
+def _normalized_product_type(value: str) -> str:
+    return re.sub(r"\s+", " ", value.replace("-", " ")).strip().lower()
+
+
+def _replace_products(text: str) -> tuple[str, list[dict[str, Any]]]:
+    items: list[dict[str, Any]] = []
+
+    def second_reference_repl(match: re.Match[str]) -> str:
+        product_type = _normalized_product_type(match.group("product"))
+        items.append(
+            {
+                "original": match.group(0),
+                "product_type": product_type,
+                "generic_description": product_type,
+                "reference_source": "second_reference_image",
+            }
+        )
+        return PRODUCT_PLACEHOLDER
+
+    text = SECOND_REFERENCE_PRODUCT_RE.sub(second_reference_repl, text)
+
+    def sneaker_repl(match: re.Match[str]) -> str:
+        details = (match.group("details") or "").strip()
+        generic = _normalized_product_type(match.group("product"))
+        if details:
+            generic = f"{generic} {details}"
+        items.append(
+            {
+                "original": match.group(0),
+                "product_type": "sneakers",
+                "generic_description": generic,
+                "reference_source": "product_image",
+            }
+        )
+        return PRODUCT_PLACEHOLDER
+
+    text = SNEAKER_PRODUCT_IMAGE_RE.sub(sneaker_repl, text)
+
+    def jewelry_repl(match: re.Match[str]) -> str:
+        items.append(
+            {
+                "original": match.group(0),
+                "product_type": "jewelry",
+                "generic_description": (
+                    "gold pendant necklace, a thin chain with a small round clear-stone "
+                    "charm sitting at her collarbone, plus matching small gold hoop "
+                    "earrings with tiny clear stones"
+                ),
+                "reference_source": "product_image",
+            }
+        )
+        return PRODUCT_PLACEHOLDER
+
+    text = JEWELRY_PRODUCT_IMAGE_RE.sub(jewelry_repl, text)
+    return text, items
+
+
 def transform_prompt(prompt: dict[str, Any]) -> dict[str, Any]:
     original = prompt["prompt_original"]
     template, subject_slot, subject_scope_slot = _subject_transform(original)
 
-    # Some prompts contain a second identity-scoped subject phrase later in the
-    # same prompt.  Normalize only those explicit reference-linked occurrences.
-    template, extra_subjects, extra_scopes = _replace_residual_subject_reference_scopes(template)
+    template, extra_subjects, extra_scopes = _replace_residual_subject_reference_scopes(
+        template
+    )
     if extra_subjects:
         if subject_slot is None:
             subject_slot = {
@@ -170,30 +283,30 @@ def transform_prompt(prompt: dict[str, Any]) -> dict[str, Any]:
         else:
             subject_scope_slot["original"].extend(extra_scopes)
 
+    template, subject_slot = _insert_known_missing_subject(
+        prompt, template, subject_slot
+    )
+
     template, identity_originals = _replace_matches(
         template, IDENTITY_RE, REFERENCE_IDENTITY_PLACEHOLDER
     )
     template, generation_originals = _replace_matches(
         template, REFERENCE_GENERATION_RE, REFERENCE_GENERATION_PLACEHOLDER
     )
-
-    product_reference_sentences = [
-        sentence
-        for sentence in split_sentences(original)
-        if "second reference image" in sentence.casefold()
-    ]
+    template, product_items = _replace_products(template)
 
     residual_reference_sentences = [
         sentence
         for sentence in split_sentences(template)
-        if "reference image" in sentence.casefold()
+        if any(
+            marker in sentence.casefold()
+            for marker in ("reference image", "product image")
+        )
     ]
 
     review_reasons: list[str] = []
     if subject_slot is None:
         review_reasons.append("no_subject_candidate")
-    if product_reference_sentences:
-        review_reasons.append("second_reference_product")
     if residual_reference_sentences:
         review_reasons.append("residual_reference_language")
 
@@ -215,20 +328,14 @@ def transform_prompt(prompt: dict[str, Any]) -> dict[str, Any]:
             "original": generation_originals,
             "status": "auto" if generation_originals else "not_present",
         },
-        "reference_product": {
-            "placeholder": "[[REFERENCE_PRODUCT]]",
-            "original": product_reference_sentences,
-            "status": "review" if product_reference_sentences else "not_present",
-            "note": (
-                "Not automatically replaced: these sentences also carry useful "
-                "product/action/scene wording."
-                if product_reference_sentences
-                else ""
-            ),
+        "product": {
+            "placeholder": PRODUCT_PLACEHOLDER,
+            "items": product_items,
+            "status": "auto" if product_items else "not_present",
         },
     }
 
-    result = {
+    return {
         "id": prompt["id"],
         "source_index": prompt["source_index"],
         "collection": prompt["collection"],
@@ -241,7 +348,6 @@ def transform_prompt(prompt: dict[str, Any]) -> dict[str, Any]:
             "image_alt": prompt.get("image_alt"),
             "prompt_sha256": prompt["prompt_sha256"],
         },
-        # Immutable source copy.  Never derive this from prompt_template.
         "prompt_original": original,
         "prompt_template": template,
         "slots": slots,
@@ -255,7 +361,6 @@ def transform_prompt(prompt: dict[str, Any]) -> dict[str, Any]:
             "residual_reference_sentences": residual_reference_sentences,
         },
     }
-    return result
 
 
 def build_curated(library_path: Path, out_dir: Path) -> tuple[Path, Path, Path]:
@@ -269,18 +374,27 @@ def build_curated(library_path: Path, out_dir: Path) -> tuple[Path, Path, Path]:
 
     counts = Counter()
     review_reasons = Counter()
+    product_sources = Counter()
     for p in curated_prompts:
         slots = p["slots"]
-        if slots["subject"]:
-            counts["subject_replaced"] += 1
+        subject = slots["subject"]
+        if subject:
+            counts["subject_ready"] += 1
+            if subject.get("status") == "inserted":
+                counts["subject_inserted"] += 1
+            else:
+                counts["subject_replaced"] += 1
         if slots["reference_identity"]["original"]:
             counts["reference_identity_replaced"] += 1
         if slots["reference_identity_scope"]["original"]:
             counts["reference_identity_scope_extracted"] += 1
         if slots["reference_generation"]["original"]:
             counts["reference_generation_replaced"] += 1
-        if slots["reference_product"]["original"]:
-            counts["second_reference_product_review"] += 1
+        if slots["product"]["items"]:
+            counts["product_prompt_normalized"] += 1
+            counts["product_item_normalized"] += len(slots["product"]["items"])
+            for item in slots["product"]["items"]:
+                product_sources[item["reference_source"]] += 1
         if p["curation"]["review_required"]:
             counts["review_required"] += 1
             review_reasons.update(p["curation"]["review_reasons"])
@@ -312,13 +426,14 @@ def build_curated(library_path: Path, out_dir: Path) -> tuple[Path, Path, Path]:
             "prompt_count": len(curated_prompts),
             "collection_count": len(by_collection),
             **dict(sorted(counts.items())),
+            "product_reference_sources": dict(sorted(product_sources.items())),
         },
         "placeholders": {
             "subject": SUBJECT_PLACEHOLDER,
             "reference_identity": REFERENCE_IDENTITY_PLACEHOLDER,
             "reference_identity_scope": REFERENCE_IDENTITY_SCOPE_PLACEHOLDER,
             "reference_generation": REFERENCE_GENERATION_PLACEHOLDER,
-            "reference_product_reserved": "[[REFERENCE_PRODUCT]]",
+            "product": PRODUCT_PLACEHOLDER,
         },
         "prompts": curated_prompts,
     }
@@ -331,8 +446,9 @@ def build_curated(library_path: Path, out_dir: Path) -> tuple[Path, Path, Path]:
             "collection": p["collection"],
             "source_index": p["source_index"],
             "reasons": p["curation"]["review_reasons"],
-            "residual_reference_sentences": p["curation"]["residual_reference_sentences"],
-            "product_reference_sentences": p["slots"]["reference_product"]["original"],
+            "residual_reference_sentences": p["curation"][
+                "residual_reference_sentences"
+            ],
             "prompt_original": p["prompt_original"],
             "prompt_template": p["prompt_template"],
         }
@@ -348,12 +464,13 @@ def build_curated(library_path: Path, out_dir: Path) -> tuple[Path, Path, Path]:
             "prompt_count": len(curated_prompts),
             "collection_count": len(by_collection),
             **dict(sorted(counts.items())),
+            "product_reference_sources": dict(sorted(product_sources.items())),
             "review_reasons": dict(sorted(review_reasons.items())),
         },
         "review_items": review_items,
         "note": (
-            "Phase 2 is conservative. prompt_original remains unchanged; second-reference "
-            "product instructions are review-only and are not rewritten automatically."
+            "Phase 2 is non-destructive: prompt_original remains unchanged. "
+            "Reference mechanics are moved into semantic slots in prompt_template."
         ),
     }
     report_json = out_dir / "reports" / "transformation_report.json"
@@ -371,29 +488,39 @@ def build_curated(library_path: Path, out_dir: Path) -> tuple[Path, Path, Path]:
         "",
         f"- Prompts: **{s['prompt_count']}**",
         f"- Collections: **{s['collection_count']}**",
-        f"- Subject replaced: **{s.get('subject_replaced', 0)}**",
+        f"- Subject placeholder ready: **{s.get('subject_ready', 0)}**",
+        f"  - extracted/replaced: **{s.get('subject_replaced', 0)}**",
+        f"  - explicitly inserted: **{s.get('subject_inserted', 0)}**",
         f"- Identity clause replaced: **{s.get('reference_identity_replaced', 0)}**",
         f"- Subject-attached reference scope extracted: **{s.get('reference_identity_scope_extracted', 0)}**",
         f"- Reference-generation instruction replaced: **{s.get('reference_generation_replaced', 0)}**",
-        f"- Second-reference/product prompts held for review: **{s.get('second_reference_product_review', 0)}**",
+        f"- Product prompts normalized: **{s.get('product_prompt_normalized', 0)}**",
+        f"- Product items normalized: **{s.get('product_item_normalized', 0)}**",
         f"- Auto-ready: **{s.get('auto_ready', 0)}**",
         f"- Review required: **{s.get('review_required', 0)}**",
         "",
-        "### Review reasons",
+        "### Product reference sources",
         "",
     ]
-    for reason, count in s.get("review_reasons", {}).items():
-        lines.append(f"- `{reason}`: {count}")
+    for source_name, count in s.get("product_reference_sources", {}).items():
+        lines.append(f"- `{source_name}`: {count}")
+
+    lines += ["", "### Review reasons", ""]
+    if s.get("review_reasons"):
+        for reason, count in s["review_reasons"].items():
+            lines.append(f"- `{reason}`: {count}")
+    else:
+        lines.append("_None._")
 
     lines += [
         "",
         "## Placeholder semantics",
         "",
-        f"- `{SUBJECT_PLACEHOLDER}` — source subject phrase; render with a LoRA trigger / desired subject.",
+        f"- `{SUBJECT_PLACEHOLDER}` — subject phrase / LoRA trigger target.",
         f"- `{REFERENCE_IDENTITY_PLACEHOLDER}` — standard identity-preservation instruction.",
         f"- `{REFERENCE_IDENTITY_SCOPE_PLACEHOLDER}` — subject-attached `from the reference image...` scope.",
         f"- `{REFERENCE_GENERATION_PLACEHOLDER}` — reference-only / no-compositing generation instruction.",
-        "- `[[REFERENCE_PRODUCT]]` is reserved but **not auto-inserted yet**; the seven second-reference product cases remain intact and are queued for review.",
+        f"- `{PRODUCT_PLACEHOLDER}` — product identity. Slot metadata retains the original reference-aware wording, product type/generic description, and whether it came from `second_reference_image` or `product_image`.",
         "",
         "## Review items",
         "",
