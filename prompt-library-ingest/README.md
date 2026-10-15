@@ -5,7 +5,7 @@ This repository now has two deliberately separate stages:
 1. **Phase 1 — immutable ingest/audit**: snapshot HearmemanAI, parse exact source prompts, and inventory subject/reference patterns.
 2. **Phase 2 — curated templates**: derive model-neutral prompt templates with semantic placeholders while retaining `prompt_original` unchanged.
 
-Rendering/export for ComfyUI is intentionally a later stage.  We first validate the transformations across the complete library.
+Rendering/export for ComfyUI is intentionally a later stage. We first validate the transformations across the complete library.
 
 ## Phase 1 output
 
@@ -75,7 +75,7 @@ The ingest compares:
 3. prompt-card image count with parsed prompt count;
 4. image-alt character with prompt-header character.
 
-Do not normalize until the declared/parsed totals agree or every mismatch is understood.  The current validated snapshot is **188 prompts across 35 collections**.
+Do not normalize until the declared/parsed totals agree or every mismatch is understood. The current validated snapshot is **188 prompts across 35 collections**.
 
 # Phase 2 — curated/template layer
 
@@ -104,7 +104,7 @@ prompt-library/
     └── transformation_report.md
 ```
 
-`prompt_original` is copied unchanged into every curated record.  Automatic transformations are written only to `prompt_template`.
+`prompt_original` is copied unchanged into every curated record. Automatic transformations are written only to `prompt_template`.
 
 ## Semantic placeholders
 
@@ -114,9 +114,25 @@ Phase 2 currently uses:
 - `[[REFERENCE_IDENTITY]]` — the standard "Preserve the character identity..." instruction, including the inline `preserving...` variant.
 - `[[REFERENCE_IDENTITY_SCOPE]]` — subject-attached wording such as `from the reference image, used only for identity...`. Later repeated subject/reference phrases are normalized too, but ordinary later uses of `woman` are not globally replaced.
 - `[[REFERENCE_GENERATION]]` — instructions that the reference is identity-only and must not be pasted/composited into the result.
-- `[[REFERENCE_PRODUCT]]` — **reserved, but not auto-inserted yet**.
+- `[[PRODUCT]]` — the product identity. The prompt body retains presentation/action wording; structured slot metadata retains the original reference-aware wording, a generic product description/type, and whether the product came from `second_reference_image` or `product_image`.
 
-The seven known second-reference/product prompts are intentionally left intact and placed in the review queue.  Their reference wording is mixed with useful product/action/scene instructions, so deleting the whole sentence automatically would lose information.
+The UGC product prompts deliberately normalize only the product-identity fragment. For example, wording equivalent to:
+
+```text
+holding the exact tumbler product shown in the second reference image,
+product kept identical,
+held clearly toward camera
+```
+
+becomes:
+
+```text
+holding [[PRODUCT]], held clearly toward camera
+```
+
+so the pose/presentation instruction survives intact. The two UGC prompts that use `product image` rather than `second reference image` (jewelry and sneakers) are normalized into the same slot.
+
+One tote UGC prompt has no explicit subject noun in the source. A narrowly scoped collection-specific rule inserts `[[SUBJECT]]` after `street-style full-body mirror selfie`; the curated slot records this as `status: inserted` rather than pretending a source phrase existed.
 
 ## Curation metadata
 
@@ -143,7 +159,7 @@ After generating the curated layer, inspect:
 cat prompt-library/reports/transformation_report.md
 ```
 
-Prompts marked `auto_ready` are candidates for automatic export.  Prompts in the review queue should be inspected before we create Krea2/Qwen renderers or ComfyUI batch exports.
+The current target is for all 188 prompts to be structurally auto-ready before we create Krea2/Qwen renderers or ComfyUI batch exports.
 
 ## Tests
 
@@ -159,4 +175,4 @@ Then run:
 python3 -m pytest -q
 ```
 
-The tests cover pack discovery/parsing as well as the Phase-2 transformations, including subject-attached reference scope, inline identity clauses, the inline `preserving...` identity variant, later repeated identity-scoped subject phrases, multi-panel reference instructions, product-reference review handling, and missing-subject review handling.
+The tests cover pack discovery/parsing as well as the Phase-2 transformations, including subject-attached reference scope, inline identity clauses, the inline `preserving...` identity variant, later repeated identity-scoped subject phrases, multi-panel reference instructions, second-reference products, `product image` jewelry/sneakers, the tote subject insertion rule, and the generic missing-subject review fallback.
