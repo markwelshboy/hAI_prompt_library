@@ -2,7 +2,7 @@
 """Render curated HearmemanAI prompts and export ComfyUI-friendly batches.
 
 Phase 3 consumes ``prompt-library/curated/library.json`` produced by
-``hearmeman_curate.py``.  It never edits the source or curated layers.
+``hearmeman_curate.py``. It never edits the source or curated layers.
 
 Profiles:
 
@@ -15,12 +15,15 @@ Profiles:
 * ``raw``: export ``prompt_original`` exactly as preserved by Phase 1/2.
 
 Exports contain one UTF-8 ``.txt`` file per prompt plus ``manifest.json``.
+Rerunning the same named export replaces the generated run directory so stale
+prompt files cannot survive a narrower subsequent selection.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -79,9 +82,6 @@ def _render_product_reference(item: dict[str, Any]) -> str:
     product_type = str(item.get("product_type") or "product").strip()
 
     if source == "second_reference_image":
-        # Preserve the source product spelling when possible (e.g. ``tote-bag``)
-        # but deliberately exclude any intervening pose/action phrase captured
-        # by the perfume source variant; that phrase already lives in template.
         match = re.search(
             r"\bthe\s+exact\s+(?P<product>.+?)\s+product\s+shown\s+in\s+the\s+second\s+reference\s+image\b",
             original,
@@ -94,8 +94,6 @@ def _render_product_reference(item: dict[str, Any]) -> str:
         )
 
     if source == "product_image":
-        # These product-image clauses were removed as complete semantic units,
-        # so restoring the preserved original does not duplicate pose text.
         if original:
             return original
         return f"the {product_type} from the product image, kept identical"
@@ -115,7 +113,7 @@ def _product_values(
     overrides = overrides or {}
 
     for item in items:
-        product_type = str(item.get("product_type") or "product")
+        product_type = str(item.get("product_type") or "product").strip().lower()
         if profile == "qwen-reference":
             values.append(_render_product_reference(item))
         else:
@@ -127,11 +125,6 @@ def _product_values(
 
 
 def _cleanup_omitted_reference_text(text: str) -> str:
-    """Tidy punctuation left by empty semantic reference slots.
-
-    Work line-by-line so multiline prompts remain multiline rather than being
-    flattened into a single paragraph.
-    """
     cleaned_lines: list[str] = []
     for line in text.splitlines():
         line = re.sub(r"[ \t]+", " ", line).strip()
@@ -306,7 +299,7 @@ def load_product_overrides(path: Path | None) -> dict[str, str]:
         raise RenderError(
             "--product-map must be a JSON object mapping product_type to text"
         )
-    return obj
+    return {k.strip().lower(): v for k, v in obj.items()}
 
 
 def _safe_character(value: str) -> str:
@@ -329,6 +322,10 @@ def export_prompts(
     product_overrides: dict[str, str] | None = None,
 ) -> Path:
     library = json.loads(curated_library.read_text(encoding="utf-8"))
+    collections = list(collections)
+    prompt_ids = list(prompt_ids)
+    source_models = list(source_models)
+
     prompts = select_prompts(
         library.get("prompts", []),
         collections=collections,
@@ -340,6 +337,8 @@ def export_prompts(
     )
 
     run_dir = out_dir / "exports" / profile / slugify(export_name)
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
     items: list[dict[str, Any]] = []
 
     for global_index, prompt in enumerate(prompts, start=1):
@@ -351,7 +350,9 @@ def export_prompts(
         )
         collection_slug = str(prompt["collection_slug"])
         source_index = int(prompt.get("source_index", global_index - 1)) + 1
-        character = _safe_character(str(prompt.get("source", {}).get("character") or "prompt"))
+        character = _safe_character(
+            str(prompt.get("source", {}).get("character") or "prompt")
+        )
         suffix = str(prompt["id"]).rsplit("-", 1)[-1]
         filename = f"{source_index:03d}__{character}__{suffix}.txt"
         relative = Path("collections") / collection_slug / filename
@@ -383,9 +384,9 @@ def export_prompts(
         "subject": subject if profile != "raw" else None,
         "source_library": str(curated_library),
         "selection": {
-            "collections": list(collections),
-            "prompt_ids": list(prompt_ids),
-            "source_models": list(source_models),
+            "collections": collections,
+            "prompt_ids": prompt_ids,
+            "source_models": source_models,
             "curation": selection,
             "include_review": include_review,
             "limit": limit,
