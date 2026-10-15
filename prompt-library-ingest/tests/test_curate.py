@@ -64,6 +64,38 @@ def test_inline_identity_clause_keeps_surrounding_scene_text():
     assert out["curation"]["review_required"] is False
 
 
+def test_inline_preserving_identity_variant_is_normalized():
+    src = (
+        "A woman, preserving the character identity from the reference image, keeping "
+        "their exact hair color, hairstyle, eye color, skin tone, face shape, and body "
+        "shape, lounging on a soft gray couch."
+    )
+    out = transform_prompt(prompt(src))
+
+    assert "[[REFERENCE_IDENTITY]]" in out["prompt_template"]
+    assert "reference image" not in out["prompt_template"].casefold()
+    assert "lounging on a soft gray couch" in out["prompt_template"]
+    assert out["curation"]["review_required"] is False
+
+
+def test_later_identity_scoped_subject_is_normalized_without_global_woman_replace():
+    src = (
+        f"Candid amateur photo of a single adult woman. {IDENTITY} "
+        "She stands taking a full-length mirror selfie. "
+        "Candid amateur phone mirror selfie of a woman from the reference image, "
+        "used for identity reference only. "
+        f"{IDENTITY} Another woman walks past in the distant background."
+    )
+    out = transform_prompt(prompt(src))
+
+    assert out["prompt_template"].count("[[SUBJECT]]") == 2
+    assert out["prompt_template"].count("[[REFERENCE_IDENTITY_SCOPE]]") == 1
+    assert out["prompt_template"].count("[[REFERENCE_IDENTITY]]") == 2
+    assert "Another woman walks past" in out["prompt_template"]
+    assert "reference image" not in out["prompt_template"].casefold()
+    assert out["curation"]["review_required"] is False
+
+
 def test_reference_generation_instruction_becomes_separate_slot():
     src = (
         "Three-panel collage of a woman. "
