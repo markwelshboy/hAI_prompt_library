@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/hearmemanai-library.schema.json",
+  "title": "HearmemanAI raw prompt library",
+  "type": "object",
+  "required": ["schema_version", "source", "stats", "packs", "prompts", "warnings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source": {"type": "object"},
+    "stats": {"type": "object"},
+    "packs": {"type": "array"},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "prompts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "source_index", "collection", "collection_slug", "character",
+          "model", "source_url", "prompt_original", "prompt_blocks_original",
+          "prompt_sha256"
+        ],
+        "properties": {
+          "id": {"type": "string"},
+          "source_index": {"type": "integer", "minimum": 0},
+          "collection": {"type": "string"},
+          "collection_slug": {"type": "string"},
+          "character": {"type": "string"},
+          "model": {"type": "string"},
+          "source_url": {"type": "string"},
+          "image_url": {"type": ["string", "null"]},
+          "image_alt": {"type": ["string", "null"]},
+          "prompt_original": {"type": "string"},
+          "prompt_blocks_original": {"type": "array", "items": {"type": "string"}},
+          "prompt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}
