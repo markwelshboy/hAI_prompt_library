@@ -18,6 +18,7 @@ from hearmeman_ingest_core import *  # noqa: F401,F403 - preserve public API
 
 
 _MODEL_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_UI_ONLY_TOKENS = {"View prompt"}
 
 
 def discover_pack_urls(html: str, base_url: str = LIBRARY_URL) -> list[str]:
@@ -118,7 +119,7 @@ def _fallback_tokens(soup: BeautifulSoup) -> list[str]:
         if token in STOP_MARKERS:
             break
 
-        if token in SKIP_TOKENS:
+        if token in SKIP_TOKENS or token in _UI_ONLY_TOKENS:
             continue
 
         # The UI anchor is normally a separate text node, but tolerate markup
