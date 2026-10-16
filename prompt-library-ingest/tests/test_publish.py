@@ -56,3 +56,14 @@ def test_validate_export_rejects_unresolved_placeholder(tmp_path: Path):
         assert "Unresolved placeholder" in str(exc)
     else:
         raise AssertionError("unresolved placeholder should fail")
+
+
+def test_publish_rejects_path_like_bundle_name(tmp_path: Path):
+    source = make_export(tmp_path)
+    runtime = tmp_path / "runtime-library"
+    try:
+        publish_export(source, runtime, profile="krea2-lora", name="../escape")
+    except ValueError as exc:
+        assert "single path component" in str(exc)
+    else:
+        raise AssertionError("path-like bundle name should fail")
