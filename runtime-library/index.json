@@ -1,23 +1,19 @@
 {
-  "schema_version": 1,
-  "generated_at": "2026-10-16T00:58:52+00:00",
+  "schema_version": 2,
+  "generated_at": "2026-10-16T18:18:10+00:00",
   "bundle_count": 2,
   "bundles": [
     {
-      "manifest": "krea2-lora/sh1vx-all/manifest.json",
-      "profile": "krea2-lora",
-      "export_name": "sh1vx-all",
-      "subject": "sH1VX woman",
+      "manifest": "t2i/manifest.json",
+      "mode": "t2i",
       "prompt_count": 188,
-      "published_at": "2026-10-16T00:58:51+00:00"
+      "published_at": "2026-10-16T18:18:10+00:00"
     },
     {
-      "manifest": "qwen-reference/qwen-all/manifest.json",
-      "profile": "qwen-reference",
-      "export_name": "qwen-all",
-      "subject": "one adult woman",
+      "manifest": "i2i/manifest.json",
+      "mode": "i2i",
       "prompt_count": 188,
-      "published_at": "2026-10-16T00:58:52+00:00"
+      "published_at": "2026-10-16T18:18:10+00:00"
     }
   ]
 }
