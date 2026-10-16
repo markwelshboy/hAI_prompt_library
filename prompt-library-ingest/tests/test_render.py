@@ -155,6 +155,19 @@ def test_qwen_perfume_product_does_not_duplicate_pose_text():
             }
         ],
     )
+    # This custom template intentionally has no scope/generation placeholders.
+    # Keep its semantic slot metadata coherent with the template so this test
+    # isolates the perfume product rendering behavior.
+    prompt["slots"]["reference_identity_scope"] = {
+        "placeholder": "[[REFERENCE_IDENTITY_SCOPE]]",
+        "original": [],
+        "status": "not_present",
+    }
+    prompt["slots"]["reference_generation"] = {
+        "placeholder": "[[REFERENCE_GENERATION]]",
+        "original": [],
+        "status": "not_present",
+    }
 
     rendered = render_prompt(prompt, "qwen-reference", subject="one adult woman")
     assert rendered.count("up near the side of her neck as if about to spray") == 1
@@ -162,6 +175,18 @@ def test_qwen_perfume_product_does_not_duplicate_pose_text():
         "the exact perfume product shown in the second reference image, product kept identical"
         in rendered
     )
+
+
+def test_qwen_reference_rejects_slot_metadata_without_matching_placeholder():
+    prompt = curated_prompt(
+        template="Photo of [[SUBJECT]]. [[REFERENCE_IDENTITY]]"
+    )
+
+    with pytest.raises(
+        RenderError,
+        match=r"\[\[REFERENCE_IDENTITY_SCOPE\]\] occurs 0 time\(s\) but slot has 1 value\(s\)",
+    ):
+        render_prompt(prompt, "qwen-reference", subject="one adult woman")
 
 
 def test_raw_profile_returns_original_exactly():
