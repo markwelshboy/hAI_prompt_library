@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Publish a rendered prompt export into the repo's ComfyUI runtime library."""
+"""Publish a compiled t2i/i2i export into the repo runtime library."""
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 from hearmeman_ingest_core import utc_now, write_json
+
+RUNTIME_MODES = ("t2i", "i2i")
+SUBJECT_PLACEHOLDER = "[[SUBJECT]]"
+PLACEHOLDER_RE = re.compile(r"\[\[[A-Z0-9_]+\]\]")
 
 
 def _safe_component(value: str, label: str) -> str:
@@ -28,11 +33,22 @@ def _safe_relative(base: Path, rel: str) -> Path:
     return target
 
 
-def validate_export(source_dir: Path) -> dict[str, Any]:
+def validate_export(source_dir: Path, *, mode: str | None = None) -> dict[str, Any]:
     manifest_path = source_dir / "manifest.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Export manifest not found: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if mode is not None and manifest.get("mode") != mode:
+        raise ValueError(
+            f"Manifest mode {manifest.get('mode')!r} does not match {mode!r}"
+        )
+    if manifest.get("subject_deferred") is not True:
+        raise ValueError("Runtime export must defer [[SUBJECT]] substitution")
+    if manifest.get("subject_placeholder") != SUBJECT_PLACEHOLDER:
+        raise ValueError(
+            f"Runtime export subject_placeholder must be {SUBJECT_PLACEHOLDER}"
+        )
+
     items = manifest.get("items")
     if not isinstance(items, list):
         raise ValueError("manifest.items must be a list")
@@ -40,6 +56,7 @@ def validate_export(source_dir: Path) -> dict[str, Any]:
         raise ValueError(
             f"prompt_count={manifest.get('prompt_count')} but items={len(items)}"
         )
+
     for item in items:
         rel = item.get("file")
         if not isinstance(rel, str) or not rel:
@@ -50,15 +67,23 @@ def validate_export(source_dir: Path) -> dict[str, Any]:
         text = path.read_text(encoding="utf-8")
         if not text.strip():
             raise ValueError(f"Prompt file is empty: {path}")
-        if "[[" in text:
-            raise ValueError(f"Unresolved placeholder in published prompt: {path}")
+        placeholders = set(PLACEHOLDER_RE.findall(text))
+        unexpected = sorted(placeholders - {SUBJECT_PLACEHOLDER})
+        if unexpected:
+            raise ValueError(
+                f"Unexpected unresolved placeholder(s) in {path}: "
+                + ", ".join(unexpected)
+            )
+        if SUBJECT_PLACEHOLDER not in placeholders:
+            raise ValueError(f"Published runtime prompt has no {SUBJECT_PLACEHOLDER}: {path}")
     return manifest
 
 
 def rebuild_runtime_index(runtime_root: Path) -> Path:
     entries: list[dict[str, Any]] = []
-    for path in sorted(runtime_root.rglob("manifest.json")):
-        if ".tmp-" in path.as_posix():
+    for mode in RUNTIME_MODES:
+        path = runtime_root / mode / "manifest.json"
+        if not path.is_file():
             continue
         try:
             manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -66,16 +91,14 @@ def rebuild_runtime_index(runtime_root: Path) -> Path:
             continue
         entries.append(
             {
-                "manifest": path.relative_to(runtime_root).as_posix(),
-                "profile": manifest.get("profile"),
-                "export_name": manifest.get("export_name"),
-                "subject": manifest.get("subject"),
+                "manifest": f"{mode}/manifest.json",
+                "mode": mode,
                 "prompt_count": manifest.get("prompt_count"),
                 "published_at": manifest.get("published_at"),
             }
         )
     index = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": utc_now(),
         "bundle_count": len(entries),
         "bundles": entries,
@@ -89,23 +112,19 @@ def publish_export(
     source_dir: Path,
     runtime_root: Path,
     *,
-    profile: str,
-    name: str,
+    mode: str,
 ) -> Path:
-    profile = _safe_component(profile, "profile")
-    name = _safe_component(name, "name")
+    mode = _safe_component(mode, "mode")
+    if mode not in RUNTIME_MODES:
+        raise ValueError(f"mode must be one of: {', '.join(RUNTIME_MODES)}")
+
     source_dir = source_dir.resolve()
     runtime_root = runtime_root.resolve()
-    manifest = validate_export(source_dir)
+    manifest = validate_export(source_dir, mode=mode)
 
-    if manifest.get("profile") != profile:
-        raise ValueError(
-            f"Manifest profile {manifest.get('profile')!r} does not match {profile!r}"
-        )
-
-    destination = runtime_root / profile / name
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    tmp = destination.parent / f".tmp-{destination.name}"
+    destination = runtime_root / mode
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    tmp = runtime_root / f".tmp-{mode}"
     if tmp.exists():
         shutil.rmtree(tmp)
     shutil.copytree(source_dir, tmp)
@@ -114,7 +133,7 @@ def publish_export(
     copied = json.loads(copied_manifest_path.read_text(encoding="utf-8"))
     copied["published_at"] = utc_now()
     copied["runtime_bundle"] = True
-    copied["runtime_manifest"] = f"{profile}/{name}/manifest.json"
+    copied["runtime_manifest"] = f"{mode}/manifest.json"
     write_json(copied_manifest_path, copied)
 
     if destination.exists():
@@ -132,8 +151,7 @@ def main() -> int:
         default=Path("prompt-library"),
         help="Prompt-library root containing exports/",
     )
-    ap.add_argument("--profile", required=True)
-    ap.add_argument("--name", required=True, help="Rendered export name")
+    ap.add_argument("--mode", choices=RUNTIME_MODES, required=True)
     ap.add_argument(
         "--runtime-root",
         type=Path,
@@ -143,10 +161,8 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
     runtime_root = args.runtime_root or (repo_root / "runtime-library")
-    source_dir = args.out / "exports" / args.profile / args.name
-    manifest = publish_export(
-        source_dir, runtime_root, profile=args.profile, name=args.name
-    )
+    source_dir = args.out / "exports" / args.mode
+    manifest = publish_export(source_dir, runtime_root, mode=args.mode)
     print(f"Published {manifest}")
     print(f"Runtime index: {runtime_root / 'index.json'}")
     return 0
