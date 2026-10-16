@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-16T00:58:52+00:00",
+  "bundle_count": 2,
+  "bundles": [
+    {
+      "manifest": "krea2-lora/sh1vx-all/manifest.json",
+      "profile": "krea2-lora",
+      "export_name": "sh1vx-all",
+      "subject": "sH1VX woman",
+      "prompt_count": 188,
+      "published_at": "2026-10-16T00:58:51+00:00"
+    },
+    {
+      "manifest": "qwen-reference/qwen-all/manifest.json",
+      "profile": "qwen-reference",
+      "export_name": "qwen-all",
+      "subject": "one adult woman",
+      "prompt_count": 188,
+      "published_at": "2026-10-16T00:58:52+00:00"
+    }
+  ]
+}
