@@ -179,7 +179,8 @@ def test_qwen_perfume_product_does_not_duplicate_pose_text():
 
 def test_qwen_reference_rejects_slot_metadata_without_matching_placeholder():
     prompt = curated_prompt(
-        template="Photo of [[SUBJECT]]. [[REFERENCE_IDENTITY]]"
+        template="Photo of [[SUBJECT]]. [[REFERENCE_IDENTITY]]",
+        product_items=[],
     )
 
     with pytest.raises(
