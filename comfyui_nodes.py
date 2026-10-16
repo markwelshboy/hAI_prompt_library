@@ -4,11 +4,15 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 from pathlib import Path
 from typing import Any
 
 _NO_MANIFEST = "<no published manifests found>"
 _ENV_ROOT = "HAI_PROMPT_LIBRARY_ROOT"
+_RUNTIME_MODES = ("t2i", "i2i")
+_SUBJECT_PLACEHOLDER = "[[SUBJECT]]"
+_PLACEHOLDER_RE = re.compile(r"\[\[[A-Z0-9_]+\]\]")
 
 
 def _default_runtime_root() -> Path:
@@ -38,7 +42,8 @@ def discover_manifests() -> dict[str, Path]:
     for root_index, root in enumerate(runtime_roots(), start=1):
         if not root.exists():
             continue
-        for path in sorted(root.rglob("manifest.json")):
+        for mode in _RUNTIME_MODES:
+            path = root / mode / "manifest.json"
             if not path.is_file():
                 continue
             rel = path.relative_to(root).as_posix()
@@ -52,10 +57,27 @@ def manifest_choices() -> list[str]:
     return choices if choices else [_NO_MANIFEST]
 
 
+def _relative_manifest_candidate(root: Path, label: str) -> Path | None:
+    candidate = (root / label).resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except ValueError:
+        return None
+    if candidate.is_file() and candidate.name == "manifest.json":
+        return candidate
+    return None
+
+
 def resolve_manifest(label: str) -> Path:
     found = discover_manifests()
     if label in found:
         return found[label]
+
+    for root in runtime_roots():
+        candidate = _relative_manifest_candidate(root, label)
+        if candidate is not None:
+            return candidate
+
     candidate = Path(label).expanduser()
     if candidate.is_file() and candidate.name == "manifest.json":
         return candidate.resolve()
@@ -79,6 +101,12 @@ def load_manifest(label: str) -> tuple[Path, dict[str, Any]]:
         raise ValueError(
             f"{path}: prompt_count={obj.get('prompt_count')} but items={len(items)}"
         )
+    if obj.get("subject_deferred") is not True:
+        raise ValueError(f"{path}: runtime manifest must defer {_SUBJECT_PLACEHOLDER}")
+    if obj.get("subject_placeholder") != _SUBJECT_PLACEHOLDER:
+        raise ValueError(
+            f"{path}: subject_placeholder must be {_SUBJECT_PLACEHOLDER}"
+        )
     return path, obj
 
 
@@ -97,8 +125,27 @@ def _safe_item_path(manifest_path: Path, item: dict[str, Any]) -> Path:
     return target
 
 
-def read_item(manifest_path: Path, item: dict[str, Any]) -> str:
+def read_item_template(manifest_path: Path, item: dict[str, Any]) -> str:
     return _safe_item_path(manifest_path, item).read_text(encoding="utf-8").rstrip("\n")
+
+
+def render_item(manifest_path: Path, item: dict[str, Any], subject: str) -> str:
+    value = subject.strip()
+    if not value:
+        raise ValueError("subject must not be empty")
+    text = read_item_template(manifest_path, item)
+    if _SUBJECT_PLACEHOLDER not in text:
+        raise ValueError(
+            f"{manifest_path}: prompt {item.get('prompt_id')} has no {_SUBJECT_PLACEHOLDER}"
+        )
+    text = text.replace(_SUBJECT_PLACEHOLDER, value)
+    unresolved = sorted(set(_PLACEHOLDER_RE.findall(text)))
+    if unresolved:
+        raise ValueError(
+            f"{manifest_path}: unresolved placeholder(s) after subject substitution: "
+            + ", ".join(unresolved)
+        )
+    return text
 
 
 def _filter_items(items: list[dict[str, Any]], collection: str) -> list[dict[str, Any]]:
@@ -128,6 +175,7 @@ class HAIPromptSelect:
         return {
             "required": {
                 "manifest": (manifest_choices(),),
+                "subject": ("STRING", {"default": "woman", "multiline": False}),
                 "mode": (["index", "random", "prompt_id"],),
                 "index": ("INT", {"default": 0, "min": 0, "max": 2147483647, "step": 1}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
@@ -143,10 +191,10 @@ class HAIPromptSelect:
     CATEGORY = "hAI/Prompt Library"
 
     @classmethod
-    def IS_CHANGED(cls, manifest, mode, index, seed, collection, prompt_id, wrap_index):
-        return _manifest_change_token(manifest)
+    def IS_CHANGED(cls, manifest, subject, mode, index, seed, collection, prompt_id, wrap_index):
+        return f"{_manifest_change_token(manifest)}:{subject}"
 
-    def select(self, manifest, mode, index, seed, collection, prompt_id, wrap_index):
+    def select(self, manifest, subject, mode, index, seed, collection, prompt_id, wrap_index):
         manifest_path, obj = load_manifest(manifest)
         items = _filter_items(obj["items"], collection)
         if not items:
@@ -177,7 +225,7 @@ class HAIPromptSelect:
             raise ValueError(f"Unknown selection mode: {mode}")
 
         prompt_path = _safe_item_path(manifest_path, item)
-        prompt = prompt_path.read_text(encoding="utf-8").rstrip("\n")
+        prompt = render_item(manifest_path, item, subject)
         return (
             prompt,
             str(item.get("prompt_id") or ""),
@@ -196,6 +244,7 @@ class HAIPromptBatch:
         return {
             "required": {
                 "manifest": (manifest_choices(),),
+                "subject": ("STRING", {"default": "woman", "multiline": False}),
                 "collection": ("STRING", {"default": "", "multiline": False}),
                 "order": (["manifest", "shuffle"],),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
@@ -212,10 +261,10 @@ class HAIPromptBatch:
     CATEGORY = "hAI/Prompt Library"
 
     @classmethod
-    def IS_CHANGED(cls, manifest, collection, order, seed, start, count, stride):
-        return _manifest_change_token(manifest)
+    def IS_CHANGED(cls, manifest, subject, collection, order, seed, start, count, stride):
+        return f"{_manifest_change_token(manifest)}:{subject}"
 
-    def batch(self, manifest, collection, order, seed, start, count, stride):
+    def batch(self, manifest, subject, collection, order, seed, start, count, stride):
         manifest_path, obj = load_manifest(manifest)
         items = _filter_items(obj["items"], collection)
         if not items:
@@ -239,7 +288,7 @@ class HAIPromptBatch:
                 f"stride={stride_i}, available={len(items)}"
             )
 
-        prompts = [read_item(manifest_path, item) for item in selected]
+        prompts = [render_item(manifest_path, item, subject) for item in selected]
         prompt_ids = [str(item.get("prompt_id") or "") for item in selected]
         collections = [str(item.get("collection") or "") for item in selected]
         characters = [str(item.get("source_character") or "") for item in selected]
