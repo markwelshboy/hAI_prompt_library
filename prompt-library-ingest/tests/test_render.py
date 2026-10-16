@@ -99,32 +99,34 @@ def curated_prompt(
     }
 
 
-def test_krea2_lora_omits_reference_slots_and_uses_generic_product():
+def test_t2i_omits_reference_slots_uses_generic_product_and_defers_subject():
     prompt = curated_prompt()
-    rendered = render_prompt(prompt, "krea2-lora", subject="sH1VX woman")
+    rendered = render_prompt(prompt, "t2i")
 
-    assert "sH1VX woman" in rendered
+    assert "[[SUBJECT]]" in rendered
     assert "Holding tumbler toward camera" in rendered
     assert "reference image" not in rendered.casefold()
     assert "product image" not in rendered.casefold()
-    assert "[[" not in rendered
+    assert "[[REFERENCE_" not in rendered
+    assert "[[PRODUCT]]" not in rendered
 
 
-def test_krea2_lora_product_override_uses_product_type_key():
+def test_t2i_product_override_uses_product_type_key():
     prompt = curated_prompt()
     rendered = render_prompt(
         prompt,
-        "krea2-lora",
-        subject="sH1VX woman",
+        "t2i",
         product_overrides={"tumbler": "a matte black insulated tumbler"},
     )
     assert "Holding a matte black insulated tumbler toward camera" in rendered
+    assert "[[SUBJECT]]" in rendered
 
 
-def test_qwen_reference_restores_reference_semantics():
+def test_i2i_restores_reference_semantics_and_defers_subject():
     prompt = curated_prompt()
-    rendered = render_prompt(prompt, "qwen-reference", subject="one adult woman")
+    rendered = render_prompt(prompt, "i2i")
 
+    assert "[[SUBJECT]]" in rendered
     assert SCOPE in rendered
     assert IDENTITY in rendered
     assert GENERATION in rendered
@@ -132,10 +134,11 @@ def test_qwen_reference_restores_reference_semantics():
         "the exact tumbler product shown in the second reference image, product kept identical"
         in rendered
     )
-    assert "[[" not in rendered
+    assert "[[REFERENCE_" not in rendered
+    assert "[[PRODUCT]]" not in rendered
 
 
-def test_qwen_perfume_product_does_not_duplicate_pose_text():
+def test_i2i_perfume_product_does_not_duplicate_pose_text():
     pose = " up near the side of her neck as if about to spray"
     product_original = (
         "the exact perfume product shown in the second reference image"
@@ -155,9 +158,6 @@ def test_qwen_perfume_product_does_not_duplicate_pose_text():
             }
         ],
     )
-    # This custom template intentionally has no scope/generation placeholders.
-    # Keep its semantic slot metadata coherent with the template so this test
-    # isolates the perfume product rendering behavior.
     prompt["slots"]["reference_identity_scope"] = {
         "placeholder": "[[REFERENCE_IDENTITY_SCOPE]]",
         "original": [],
@@ -169,7 +169,7 @@ def test_qwen_perfume_product_does_not_duplicate_pose_text():
         "status": "not_present",
     }
 
-    rendered = render_prompt(prompt, "qwen-reference", subject="one adult woman")
+    rendered = render_prompt(prompt, "i2i")
     assert rendered.count("up near the side of her neck as if about to spray") == 1
     assert (
         "the exact perfume product shown in the second reference image, product kept identical"
@@ -177,7 +177,7 @@ def test_qwen_perfume_product_does_not_duplicate_pose_text():
     )
 
 
-def test_qwen_reference_rejects_slot_metadata_without_matching_placeholder():
+def test_i2i_rejects_slot_metadata_without_matching_placeholder():
     prompt = curated_prompt(
         template="Photo of [[SUBJECT]]. [[REFERENCE_IDENTITY]]",
         product_items=[],
@@ -187,21 +187,33 @@ def test_qwen_reference_rejects_slot_metadata_without_matching_placeholder():
         RenderError,
         match=r"\[\[REFERENCE_IDENTITY_SCOPE\]\] occurs 0 time\(s\) but slot has 1 value\(s\)",
     ):
-        render_prompt(prompt, "qwen-reference", subject="one adult woman")
+        render_prompt(prompt, "i2i")
 
 
-def test_raw_profile_returns_original_exactly():
+def test_runtime_modes_require_subject_placeholder_in_compiled_prompt():
+    prompt = curated_prompt(template="Photo with no subject placeholder.", product_items=[])
+    for slot_name in (
+        "reference_identity",
+        "reference_identity_scope",
+        "reference_generation",
+    ):
+        prompt["slots"][slot_name] = {
+            "placeholder": f"[[{slot_name.upper()}]]",
+            "original": [],
+            "status": "not_present",
+        }
+
+    with pytest.raises(RenderError, match=r"has no \[\[SUBJECT\]\]"):
+        render_prompt(prompt, "t2i")
+
+
+def test_raw_mode_returns_original_exactly():
     original = "Line one.\nLine two with periods."
     prompt = curated_prompt(original=original)
     assert render_prompt(prompt, "raw") == original
 
 
-def test_rendered_profiles_require_subject():
-    with pytest.raises(RenderError, match="--subject is required"):
-        render_prompt(curated_prompt(), "krea2-lora")
-
-
-def test_export_writes_one_file_per_selected_prompt_and_manifest(tmp_path: Path):
+def test_export_writes_canonical_mode_directory_and_manifest(tmp_path: Path):
     first = curated_prompt(ident="hmm-test-first111", keep=None)
     second = curated_prompt(ident="hmm-test-second222", keep=False)
     second["source_index"] = 1
@@ -215,18 +227,22 @@ def test_export_writes_one_file_per_selected_prompt_and_manifest(tmp_path: Path)
     manifest_path = export_prompts(
         curated,
         tmp_path,
-        profile="krea2-lora",
-        subject="sH1VX woman",
-        export_name="test-run",
+        mode="t2i",
     )
 
+    assert manifest_path == tmp_path / "exports" / "t2i" / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 2
+    assert manifest["mode"] == "t2i"
+    assert manifest["subject_deferred"] is True
+    assert manifest["subject_placeholder"] == "[[SUBJECT]]"
     assert manifest["prompt_count"] == 1
     assert manifest["items"][0]["prompt_id"] == "hmm-test-first111"
 
     prompt_file = manifest_path.parent / manifest["items"][0]["file"]
-    assert prompt_file.exists()
-    assert "sH1VX woman" in prompt_file.read_text(encoding="utf-8")
+    text = prompt_file.read_text(encoding="utf-8")
+    assert "[[SUBJECT]]" in text
+    assert "reference image" not in text.casefold()
 
 
 def test_export_collection_filter_accepts_slug(tmp_path: Path):
@@ -244,9 +260,7 @@ def test_export_collection_filter_accepts_slug(tmp_path: Path):
     manifest_path = export_prompts(
         curated,
         tmp_path,
-        profile="raw",
-        subject=None,
-        export_name="only-other",
+        mode="raw",
         collections=["other"],
         selection="all",
     )
