@@ -19,14 +19,15 @@ def _default_runtime_root() -> Path:
 
 
 def runtime_roots() -> list[Path]:
-    roots: list[Path] = []
     configured = os.environ.get(_ENV_ROOT, "").strip()
     if configured:
-        for value in configured.split(os.pathsep):
-            value = value.strip()
-            if value:
-                roots.append(Path(value).expanduser().resolve())
-    roots.append(_default_runtime_root().resolve())
+        roots = [
+            Path(value.strip()).expanduser().resolve()
+            for value in configured.split(os.pathsep)
+            if value.strip()
+        ]
+    else:
+        roots = [_default_runtime_root().resolve()]
 
     unique: list[Path] = []
     seen: set[Path] = set()
