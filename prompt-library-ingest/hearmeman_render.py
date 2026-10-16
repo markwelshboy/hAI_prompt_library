@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
-"""Render curated HearmemanAI prompts and export ComfyUI-friendly batches.
+"""Compile curated HearmemanAI prompts into model-neutral runtime modes.
 
 Phase 3 consumes ``prompt-library/curated/library.json`` produced by
 ``hearmeman_curate.py``. It never edits the source or curated layers.
 
-Profiles:
+Modes:
 
-* ``krea2-lora``: replace ``[[SUBJECT]]`` with an explicit subject/LoRA trigger,
-  omit reference-image instructions, and render products with generic/custom
-  descriptions.
-* ``qwen-reference``: replace ``[[SUBJECT]]`` and restore reference-aware slot
-  wording. Product pose/action remains in the template; only product identity is
-  rendered from product metadata.
+* ``t2i``: keep ``[[SUBJECT]]`` deferred for runtime substitution, omit
+  reference-image instructions, and render products with generic/custom text.
+* ``i2i``: keep ``[[SUBJECT]]`` deferred for runtime substitution while
+  restoring the original reference-aware identity/generation semantics and
+  reference-aware product identity.
 * ``raw``: export ``prompt_original`` exactly as preserved by Phase 1/2.
 
 Exports contain one UTF-8 ``.txt`` file per prompt plus ``manifest.json``.
-Rerunning the same named export replaces the generated run directory so stale
-prompt files cannot survive a narrower subsequent selection.
+There is one canonical export directory per mode; rerunning a mode replaces that
+whole generated directory so stale prompt files cannot survive narrower runs.
 """
 from __future__ import annotations
 
@@ -29,7 +28,8 @@ from typing import Any, Iterable
 
 from hearmeman_ingest_core import utc_now, write_json
 
-PROFILES = ("krea2-lora", "qwen-reference", "raw")
+MODES = ("t2i", "i2i", "raw")
+RUNTIME_MODES = ("t2i", "i2i")
 
 SUBJECT_PLACEHOLDER = "[[SUBJECT]]"
 REFERENCE_IDENTITY_PLACEHOLDER = "[[REFERENCE_IDENTITY]]"
@@ -105,7 +105,7 @@ def _render_product_reference(item: dict[str, Any]) -> str:
 
 def _product_values(
     prompt: dict[str, Any],
-    profile: str,
+    mode: str,
     overrides: dict[str, str] | None,
 ) -> list[str]:
     items = (prompt.get("slots", {}).get("product") or {}).get("items") or []
@@ -114,7 +114,7 @@ def _product_values(
 
     for item in items:
         product_type = str(item.get("product_type") or "product").strip().lower()
-        if profile == "qwen-reference":
+        if mode == "i2i":
             values.append(_render_product_reference(item))
         else:
             values.append(
@@ -142,25 +142,21 @@ def _cleanup_omitted_reference_text(text: str) -> str:
 
 def render_prompt(
     prompt: dict[str, Any],
-    profile: str,
+    mode: str,
     *,
-    subject: str | None = None,
     product_overrides: dict[str, str] | None = None,
 ) -> str:
-    if profile not in PROFILES:
-        raise RenderError(f"unknown profile: {profile}")
+    """Compile one prompt for a runtime mode, deliberately deferring SUBJECT."""
+    if mode not in MODES:
+        raise RenderError(f"unknown mode: {mode}")
 
-    if profile == "raw":
+    if mode == "raw":
         return str(prompt["prompt_original"])
 
     prompt_id = str(prompt.get("id") or "<unknown>")
-    if not subject or not subject.strip():
-        raise RenderError(f"{prompt_id}: --subject is required for {profile}")
-
     text = str(prompt["prompt_template"])
-    text = text.replace(SUBJECT_PLACEHOLDER, subject.strip())
 
-    product_values = _product_values(prompt, profile, product_overrides)
+    product_values = _product_values(prompt, mode, product_overrides)
     text = _replace_sequential(
         text,
         PRODUCT_PLACEHOLDER,
@@ -168,7 +164,7 @@ def render_prompt(
         prompt_id=prompt_id,
     )
 
-    if profile == "krea2-lora":
+    if mode == "t2i":
         for placeholder in (
             REFERENCE_IDENTITY_PLACEHOLDER,
             REFERENCE_IDENTITY_SCOPE_PLACEHOLDER,
@@ -176,7 +172,7 @@ def render_prompt(
         ):
             text = text.replace(placeholder, "")
         text = _cleanup_omitted_reference_text(text)
-    elif profile == "qwen-reference":
+    elif mode == "i2i":
         text = _replace_sequential(
             text,
             REFERENCE_IDENTITY_PLACEHOLDER,
@@ -198,12 +194,17 @@ def render_prompt(
         text = text.strip()
 
     unresolved = sorted(set(PLACEHOLDER_RE.findall(text)))
-    if unresolved:
+    unexpected = [p for p in unresolved if p != SUBJECT_PLACEHOLDER]
+    if unexpected:
         raise RenderError(
-            f"{prompt_id}: unresolved placeholder(s): {', '.join(unresolved)}"
+            f"{prompt_id}: unresolved placeholder(s): {', '.join(unexpected)}"
+        )
+    if SUBJECT_PLACEHOLDER not in text:
+        raise RenderError(
+            f"{prompt_id}: compiled {mode} prompt has no {SUBJECT_PLACEHOLDER}"
         )
 
-    if profile == "krea2-lora":
+    if mode == "t2i":
         low = text.casefold()
         residual = [
             marker
@@ -212,7 +213,7 @@ def render_prompt(
         ]
         if residual:
             raise RenderError(
-                f"{prompt_id}: {profile} output still contains reference wording: "
+                f"{prompt_id}: {mode} output still contains reference wording: "
                 + ", ".join(residual)
             )
 
@@ -310,9 +311,7 @@ def export_prompts(
     curated_library: Path,
     out_dir: Path,
     *,
-    profile: str,
-    subject: str | None,
-    export_name: str,
+    mode: str,
     collections: Iterable[str] = (),
     prompt_ids: Iterable[str] = (),
     source_models: Iterable[str] = (),
@@ -336,7 +335,7 @@ def export_prompts(
         limit=limit,
     )
 
-    run_dir = out_dir / "exports" / profile / slugify(export_name)
+    run_dir = out_dir / "exports" / mode
     if run_dir.exists():
         shutil.rmtree(run_dir)
     items: list[dict[str, Any]] = []
@@ -344,8 +343,7 @@ def export_prompts(
     for global_index, prompt in enumerate(prompts, start=1):
         rendered = render_prompt(
             prompt,
-            profile,
-            subject=subject,
+            mode,
             product_overrides=product_overrides,
         )
         collection_slug = str(prompt["collection_slug"])
@@ -376,12 +374,29 @@ def export_prompts(
             }
         )
 
+    if mode == "t2i":
+        reference_policy = "omit"
+        product_policy = "generic"
+        subject_deferred = True
+    elif mode == "i2i":
+        reference_policy = "preserve"
+        product_policy = "reference"
+        subject_deferred = True
+    else:
+        reference_policy = "raw"
+        product_policy = "raw"
+        subject_deferred = False
+
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": utc_now(),
-        "profile": profile,
-        "export_name": export_name,
-        "subject": subject if profile != "raw" else None,
+        "mode": mode,
+        "subject_placeholder": SUBJECT_PLACEHOLDER if subject_deferred else None,
+        "subject_deferred": subject_deferred,
+        "render_policy": {
+            "reference_images": reference_policy,
+            "products": product_policy,
+        },
         "source_library": str(curated_library),
         "selection": {
             "collections": collections,
@@ -398,7 +413,7 @@ def export_prompts(
     manifest_path = run_dir / "manifest.json"
     write_json(manifest_path, manifest)
 
-    print(f"Rendered {len(items)} prompt(s) with profile {profile}")
+    print(f"Compiled {len(items)} prompt(s) for mode {mode}")
     print(f"Wrote {manifest_path}")
     return manifest_path
 
@@ -416,16 +431,7 @@ def main() -> int:
         type=Path,
         help="Curated library.json (default: <out>/curated/library.json)",
     )
-    ap.add_argument("--profile", choices=PROFILES, required=True)
-    ap.add_argument(
-        "--subject",
-        help="Replacement for [[SUBJECT]]; required except with --profile raw",
-    )
-    ap.add_argument(
-        "--name",
-        dest="export_name",
-        help="Export directory name (default: subject slug, or 'raw')",
-    )
+    ap.add_argument("--mode", choices=MODES, required=True)
     ap.add_argument(
         "--collection",
         action="append",
@@ -455,18 +461,18 @@ def main() -> int:
         action="store_true",
         help="Include prompts marked review_required (normally skipped)",
     )
-    ap.add_argument("--limit", type=int, help="Render at most N matching prompts")
+    ap.add_argument("--limit", type=int, help="Compile at most N matching prompts")
     ap.add_argument(
         "--product-map",
         type=Path,
-        help="JSON object mapping product_type to custom Krea/product text",
+        help="JSON object mapping product_type to custom t2i product text",
     )
     args = ap.parse_args()
 
-    if args.profile != "raw" and not (args.subject and args.subject.strip()):
-        ap.error(f"--subject is required for --profile {args.profile}")
     if args.limit is not None and args.limit < 1:
         ap.error("--limit must be >= 1")
+    if args.product_map is not None and args.mode != "t2i":
+        ap.error("--product-map is only valid with --mode t2i")
 
     curated_library = args.library or (args.out / "curated" / "library.json")
     if not curated_library.exists():
@@ -475,16 +481,11 @@ def main() -> int:
         )
 
     product_overrides = load_product_overrides(args.product_map)
-    export_name = args.export_name or (
-        "raw" if args.profile == "raw" else slugify(args.subject or "export")
-    )
 
     export_prompts(
         curated_library,
         args.out,
-        profile=args.profile,
-        subject=args.subject,
-        export_name=export_name,
+        mode=args.mode,
         collections=args.collection,
         prompt_ids=args.prompt_id,
         source_models=args.source_model,
