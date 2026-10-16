@@ -65,7 +65,7 @@ At execution time the node replaces every `[[SUBJECT]]` occurrence with the supp
 
 Both nodes require no additional Python packages.
 
-Published manifests are discovered automatically at `runtime-library/t2i/manifest.json` and `runtime-library/i2i/manifest.json`. To store runtime bundles elsewhere, set `HAI_PROMPT_LIBRARY_ROOT`; multiple roots may be separated with the platform path separator (`:` on Linux). The first matching mode in root order wins.
+Published manifests are discovered automatically at `runtime-library/t2i/manifest.json` and `runtime-library/i2i/manifest.json`. To use runtime bundles elsewhere, set `HAI_PROMPT_LIBRARY_ROOT`; when set, it **replaces** the bundled default root rather than falling back to it. Multiple external roots may be separated with the platform path separator (`:` on Linux), and the first matching mode in root order wins.
 
 ## Compile and publish
 
