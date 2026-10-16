@@ -44,9 +44,28 @@ It exposes:
 - **hAI Prompt Select** — select one prompt by index, deterministic random seed, or exact prompt ID, then resolve `[[SUBJECT]]` from the node's `subject` input.
 - **hAI Prompt Batch** — return a ComfyUI list of some/many/all prompts, with collection, start/count/stride and deterministic shuffle controls, resolving the same `subject` across the batch.
 
+The node UI exposes the semantic runtime mode directly rather than asking for a manifest path:
+
+```text
+hAI Prompt Select
+
+mode:        t2i | i2i
+subject:     sH1VX woman
+selection:   index | random | prompt_id
+index:       0
+seed:        0
+collection:  <blank = all>
+prompt_id:   <used with selection=prompt_id>
+wrap_index:  true
+```
+
+`mode=t2i` resolves `runtime-library/t2i/manifest.json`; `mode=i2i` resolves `runtime-library/i2i/manifest.json` internally. The manifest remains the storage contract but is not exposed as a workflow-facing implementation detail.
+
+At execution time the node replaces every `[[SUBJECT]]` occurrence with the supplied subject and rejects the prompt if any other unresolved `[[...]]` placeholder remains. Changing `subject` or the underlying manifest invalidates the node cache.
+
 Both nodes require no additional Python packages.
 
-Published manifests are discovered automatically at `runtime-library/t2i/manifest.json` and `runtime-library/i2i/manifest.json`. To store runtime bundles elsewhere, set `HAI_PROMPT_LIBRARY_ROOT`; multiple roots may be separated with the platform path separator (`:` on Linux).
+Published manifests are discovered automatically at `runtime-library/t2i/manifest.json` and `runtime-library/i2i/manifest.json`. To store runtime bundles elsewhere, set `HAI_PROMPT_LIBRARY_ROOT`; multiple roots may be separated with the platform path separator (`:` on Linux). The first matching mode in root order wins.
 
 ## Compile and publish
 
