@@ -11,6 +11,13 @@ from typing import Any
 from hearmeman_ingest_core import utc_now, write_json
 
 
+def _safe_component(value: str, label: str) -> str:
+    value = value.strip()
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        raise ValueError(f"{label} must be a single path component: {value!r}")
+    return value
+
+
 def _safe_relative(base: Path, rel: str) -> Path:
     target = (base / rel).resolve()
     base = base.resolve()
@@ -85,6 +92,8 @@ def publish_export(
     profile: str,
     name: str,
 ) -> Path:
+    profile = _safe_component(profile, "profile")
+    name = _safe_component(name, "name")
     source_dir = source_dir.resolve()
     runtime_root = runtime_root.resolve()
     manifest = validate_export(source_dir)
