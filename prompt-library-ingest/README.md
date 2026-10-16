@@ -1,41 +1,31 @@
 # HearmemanAI prompt library
 
-This repository has three deliberately separate stages:
+This repository has four deliberately separate stages:
 
 1. **Phase 1 — immutable ingest/audit**: snapshot HearmemanAI, parse exact source prompts, and inventory subject/reference patterns.
 2. **Phase 2 — curated templates**: derive model-neutral prompt templates with semantic placeholders while retaining `prompt_original` unchanged.
-3. **Phase 3 — render/export**: resolve those placeholders for a target workflow and write ComfyUI-friendly prompt batches plus a manifest.
+3. **Phase 3 — compile/export**: resolve every semantic difference except the subject itself into canonical `t2i` and `i2i` runtime bundles.
+4. **Phase 4 — publish/runtime**: validate those bundles, commit them under `runtime-library/`, and resolve `[[SUBJECT]]` dynamically inside ComfyUI.
 
-The source and curated layers are never modified by rendering/export.
+The source and curated layers are never modified by compiling or publishing.
 
-## Phase 1 output
+# Phase 1 — immutable ingest/audit
+
+## Output
 
 ```text
 prompt-library/
 ├── source/
 │   └── hearmemanai/
 │       ├── raw_html/
-│       │   ├── _library.html
-│       │   └── <pack>.html
 │       ├── parsed/
-│       │   └── <pack>.json
 │       └── library.json
 └── reports/
     ├── pattern_audit.json
     └── pattern_audit.md
 ```
 
-Each source prompt record preserves:
-
-- collection and collection slug
-- source character name
-- source model
-- source pack URL
-- source image URL/alt text where available
-- prompt text as `prompt_original`
-- parsed source text blocks as `prompt_blocks_original`
-- SHA-256 of the prompt
-- deterministic prompt ID
+Each source prompt record preserves collection, source character/model metadata, source URL/image metadata, exact `prompt_original`, parsed source blocks, SHA-256, and a deterministic prompt ID.
 
 No placeholder replacement is performed in Phase 1.
 
@@ -44,39 +34,24 @@ No placeholder replacement is performed in Phase 1.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 python3 hearmeman_ingest.py all --out ./prompt-library
 ```
 
-For development/testing, install the dev requirements instead (they include the runtime requirements plus pytest):
-
-```bash
-pip install -r requirements-dev.txt
-```
-
-To force a fresh web snapshot:
+Force a fresh web snapshot with:
 
 ```bash
 python3 hearmeman_ingest.py all --out ./prompt-library --refresh
 ```
 
-After the first scrape, regenerate the audit entirely from local JSON:
+Regenerate only the audit from the local source snapshot with:
 
 ```bash
 python3 hearmeman_ingest.py audit --out ./prompt-library
 ```
 
-## Phase 1 validation gates
-
-The ingest compares:
-
-1. the library's declared total prompt count with the parsed total;
-2. each pack's declared prompt count with its parsed count;
-3. prompt-card image count with parsed prompt count;
-4. image-alt character with prompt-header character.
-
-Do not normalize until the declared/parsed totals agree or every mismatch is understood. The current validated snapshot is **188 prompts across 35 collections**.
+The current validated source snapshot is **188 prompts across 35 collections**.
 
 # Phase 2 — curated/template layer
 
@@ -99,7 +74,6 @@ prompt-library/
 ├── curated/
 │   ├── library.json
 │   └── collections/
-│       └── <collection>.json
 └── reports/
     ├── transformation_report.json
     └── transformation_report.md
@@ -111,134 +85,64 @@ prompt-library/
 
 Phase 2 uses:
 
-- `[[SUBJECT]]` — the subject phrase / LoRA trigger target.
-- `[[REFERENCE_IDENTITY]]` — the standard "Preserve the character identity..." instruction, including the inline `preserving...` variant.
-- `[[REFERENCE_IDENTITY_SCOPE]]` — subject-attached wording such as `from the reference image, used only for identity...`. Later repeated subject/reference phrases are normalized too, but ordinary later uses of `woman` are not globally replaced.
-- `[[REFERENCE_GENERATION]]` — instructions that the reference is identity-only and must not be pasted/composited into the result.
-- `[[PRODUCT]]` — the product identity. The prompt body retains presentation/action wording; structured slot metadata retains the original reference-aware wording, a generic product description/type, and whether the product came from `second_reference_image` or `product_image`.
+- `[[SUBJECT]]` — subject/category phrase, eventually resolved to e.g. `woman` or a LoRA trigger phrase.
+- `[[REFERENCE_IDENTITY]]` — standard identity-preservation instruction.
+- `[[REFERENCE_IDENTITY_SCOPE]]` — subject-attached reference-image identity scope.
+- `[[REFERENCE_GENERATION]]` — reference-only / no-compositing generation instruction.
+- `[[PRODUCT]]` — product identity/reference mechanics while preserving useful pose/presentation wording around it.
 
-The UGC product prompts deliberately normalize only the product-identity fragment. For example, wording equivalent to:
+The currently validated curated library is **188/188 auto-ready with zero review items**.
 
-```text
-holding the exact tumbler product shown in the second reference image,
-product kept identical,
-held clearly toward camera
-```
-
-becomes:
-
-```text
-holding [[PRODUCT]], held clearly toward camera
-```
-
-so the pose/presentation instruction survives intact. The two UGC prompts that use `product image` rather than `second reference image` (jewelry and sneakers) are normalized into the same slot.
-
-One tote UGC prompt has no explicit subject noun in the source. A narrowly scoped collection-specific rule inserts `[[SUBJECT]]` after `street-style full-body mirror selfie`; the curated slot records this as `status: inserted` rather than pretending a source phrase existed.
-
-## Curation metadata
-
-Every curated record includes editable curation state:
-
-```json
-{
-  "keep": null,
-  "reviewed": false,
-  "favorite": false,
-  "notes": "",
-  "review_required": false,
-  "review_reasons": []
-}
-```
-
-`keep: null` means the prompt has not yet been manually accepted/rejected.
-
-## Phase 2 acceptance step
-
-After generating the curated layer, inspect:
+Inspect the acceptance report with:
 
 ```bash
 cat prompt-library/reports/transformation_report.md
 ```
 
-The currently validated library is **188/188 auto-ready with zero review items**.
+# Phase 3 — model-neutral runtime compilation
 
-# Phase 3 — renderer/exporter
+Phase 3 does **not** compile for a specific model or LoRA. Instead it produces two semantic runtime modes:
 
-Phase 3 reads the curated library and produces resolved prompt text without modifying either Phase 1 or Phase 2 data.
+- `t2i` — for workflows that do not consume an identity/reference image. Reference-image instructions are omitted and product references become generic product descriptions.
+- `i2i` — for image-edit/reference-capable workflows. Reference-aware identity/generation wording and product-reference semantics are retained.
+- `raw` — optional exact source export for debugging/comparison only; it is not a published runtime mode.
 
-The available profiles are:
+The critical design rule is that both runtime modes deliberately retain `[[SUBJECT]]`. A trigger such as `sH1VX woman` is supplied later by the ComfyUI node, so the committed runtime library is not tied to Krea, Qwen, Klei, or one trained character.
 
-- `krea2-lora` — substitute your LoRA trigger/subject, omit all identity/reference-image instructions, and use generic or custom product descriptions.
-- `qwen-reference` — substitute the requested subject while restoring the original reference-aware identity/generation semantics and reference-aware product identity.
-- `raw` — export `prompt_original` exactly as preserved.
-
-## Krea2 / LoRA export
-
-Render the whole not-rejected library for a LoRA trigger:
+## Compile both runtime modes
 
 ```bash
-python3 hearmeman_render.py \
-  --profile krea2-lora \
-  --subject "sH1VX woman" \
-  --name sh1vx \
-  --out ./prompt-library
+python3 hearmeman_render.py --mode t2i --out ./prompt-library
+python3 hearmeman_render.py --mode i2i --out ./prompt-library
 ```
 
-This removes `[[REFERENCE_IDENTITY]]`, `[[REFERENCE_IDENTITY_SCOPE]]`, and `[[REFERENCE_GENERATION]]`, and validates that no `reference image` / `product image` wording survives in the rendered prompt.
+Output:
 
-Product prompts use their generic structured descriptions by default. To override selected product types, supply a JSON map:
-
-```json
-{
-  "tumbler": "a matte black insulated tumbler",
-  "perfume": "a clear rectangular perfume bottle with a silver cap",
-  "tote bag": "a cream canvas tote bag with black handles"
-}
+```text
+prompt-library/
+└── exports/
+    ├── t2i/
+    │   ├── manifest.json
+    │   └── collections/...
+    └── i2i/
+        ├── manifest.json
+        └── collections/...
 ```
 
-then:
+There is one canonical generated directory per runtime mode. Rerunning a mode replaces that generated directory first, preventing stale prompt files from surviving narrower test runs.
 
-```bash
-python3 hearmeman_render.py \
-  --profile krea2-lora \
-  --subject "sH1VX woman" \
-  --product-map ./my-products.json \
-  --name sh1vx-products
-```
+Each runtime `.txt` must contain `[[SUBJECT]]` and may contain **no other** unresolved `[[...]]` placeholder.
 
-The keys are the curated `product_type` values. Unspecified products fall back to their stored generic descriptions.
-
-## Qwen/reference export
-
-```bash
-python3 hearmeman_render.py \
-  --profile qwen-reference \
-  --subject "one adult woman" \
-  --name qwen-reference
-```
-
-This restores the reference-aware identity/scope/generation wording from the curated slot metadata. Product pose/action remains in `prompt_template`; only product identity/reference mechanics are restored from the product slot, avoiding duplication in the perfume pose variant.
-
-## Raw export
-
-```bash
-python3 hearmeman_render.py --profile raw
-```
-
-No subject is required for `raw` because it writes `prompt_original` unchanged.
-
-## Filtering and curation selection
+## Optional filters
 
 Filters can be combined:
 
 ```bash
 python3 hearmeman_render.py \
-  --profile krea2-lora \
-  --subject "sH1VX woman" \
+  --mode t2i \
   --collection wanderlust-diaries \
   --source-model nano-banana-2 \
-  --limit 10 \
-  --name wanderlust-test
+  --limit 10
 ```
 
 Repeat `--collection`, `--prompt-id`, or `--source-model` to select multiple values.
@@ -254,41 +158,93 @@ Curation selection modes:
 
 Prompts with `review_required=true` are skipped by default; use `--include-review` only when intentionally testing them.
 
-## Export layout
+For `t2i` product prompts, `--product-map FILE.json` may override generic product descriptions. It is intentionally rejected for `i2i`, where reference-aware product wording is the point of the mode.
 
-A named export is written under:
+# Phase 4 — publish/runtime library
 
-```text
-prompt-library/
-└── exports/
-    └── krea2-lora/
-        └── sh1vx/
-            ├── manifest.json
-            └── collections/
-                ├── wanderlust-diaries/
-                │   ├── 001__chloe__<id>.txt
-                │   └── ...
-                └── ...
+Publish the canonical compiled bundles with:
+
+```bash
+python3 hearmeman_publish.py --mode t2i --out ./prompt-library
+python3 hearmeman_publish.py --mode i2i --out ./prompt-library
 ```
 
-Each `.txt` is one complete rendered prompt. Multiline prompts and punctuation are therefore safe; no delimiter parsing is required.
+The committed runtime layout is:
 
-`manifest.json` records the profile, subject, filters, source metadata, ordered prompt IDs, relative text-file paths, and product counts. It is intended to be the stable machine-readable handoff for batch tooling or a future ComfyUI node.
+```text
+runtime-library/
+├── index.json
+├── t2i/
+│   ├── manifest.json
+│   └── collections/...
+└── i2i/
+    ├── manifest.json
+    └── collections/...
+```
 
-Rerunning the same `profile + --name` replaces that generated export directory first. This prevents stale prompt files from surviving when a later run uses a narrower filter.
+The publisher validates:
+
+- manifest item count matches `prompt_count`;
+- every prompt file exists and is non-empty;
+- paths cannot escape the bundle;
+- `[[SUBJECT]]` is present and deliberately deferred;
+- no other unresolved semantic placeholder survives.
+
+`runtime-library/index.json` indexes only the canonical `t2i` and `i2i` manifests; legacy nested model/trigger-specific manifests are ignored.
+
+# ComfyUI runtime
+
+The repository root is itself a ComfyUI custom node. It exposes:
+
+- **hAI Prompt Select** — one prompt by index, deterministic random seed, or exact prompt ID.
+- **hAI Prompt Batch** — a ComfyUI list with collection, start/count/stride and deterministic shuffle controls.
+
+Both nodes have a `subject` input. They read a deferred runtime template, replace every `[[SUBJECT]]` occurrence with that input, reject any remaining placeholder, and then emit the final prompt.
+
+Examples:
+
+```text
+t2i + subject="sH1VX woman"
+    -> LoRA-triggered text-to-image prompt
+
+i2i + subject="woman"
+    -> generic image-edit/reference prompt
+```
+
+The same `i2i` bundle can therefore be consumed by Qwen, Klei, or another reference-capable workflow without republishing the library.
+
+# Migrating the old runtime layout
+
+The earlier runtime prototype used model/trigger-specific paths such as:
+
+```text
+runtime-library/krea2-lora/sh1vx-all/
+runtime-library/qwen-reference/qwen-all/
+```
+
+Do not rewrite Git history. Remove those generated trees in a normal follow-up commit, compile/publish the canonical modes, and commit the replacement:
+
+```bash
+git rm -r runtime-library/krea2-lora runtime-library/qwen-reference
+
+cd prompt-library-ingest
+python3 hearmeman_render.py --mode t2i --out ./prompt-library
+python3 hearmeman_render.py --mode i2i --out ./prompt-library
+python3 hearmeman_publish.py --mode t2i --out ./prompt-library
+python3 hearmeman_publish.py --mode i2i --out ./prompt-library
+cd ..
+
+git add runtime-library
+git commit -m "Generalize runtime prompt library to t2i and i2i"
+git push
+```
 
 # Tests
 
-Install the development dependencies once:
-
-```bash
-pip install -r requirements-dev.txt
-```
-
-Then run:
+Run:
 
 ```bash
 python3 -m pytest -q
 ```
 
-Tests cover pack discovery/parsing, Phase-2 transformations, all three Phase-3 rendering profiles, product-reference rendering (including the perfume pose variant), product overrides, selection/filter behavior, and batch manifest/text-file export.
+Tests cover ingest parsing, Phase-2 normalization, `t2i`/`i2i` compilation, product-reference handling, deferred-subject validation, runtime publishing, path safety, and ComfyUI subject substitution/batching.
