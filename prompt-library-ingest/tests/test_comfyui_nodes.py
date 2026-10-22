@@ -56,24 +56,24 @@ def test_node_ui_exposes_semantic_runtime_modes():
     assert select_required["mode"][0] == ("t2i", "i2i")
     assert batch_required["mode"][0] == ("t2i", "i2i")
     assert select_required["selection"][0] == ["index", "random", "prompt_id"]
-    assert select_required["collection"][0][0] == "<all>"
-    assert batch_required["collection"][0][0] == "<all>"
+    assert select_required["collection"][0][0].startswith("<all>")
+    assert batch_required["collection"][0][0].startswith("<all>")
     assert "manifest" not in select_required
     assert "manifest" not in batch_required
 
 
-def test_collection_dropdown_is_populated_from_runtime_manifests(tmp_path: Path, monkeypatch):
+def test_collection_dropdown_is_populated_with_prompt_counts(tmp_path: Path, monkeypatch):
     make_bundle(tmp_path, "t2i")
     make_bundle(tmp_path, "i2i")
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
 
     choices = comfyui_nodes.collection_choices()
-    assert choices == ["<all>", "One"]
+    assert choices == ["<all> (2)", "One (2)"]
 
     select_choices = comfyui_nodes.HAIPromptSelect.INPUT_TYPES()["required"]["collection"][0]
     batch_choices = comfyui_nodes.HAIPromptBatch.INPUT_TYPES()["required"]["collection"][0]
-    assert select_choices == ["<all>", "One"]
-    assert batch_choices == ["<all>", "One"]
+    assert select_choices == ["<all> (2)", "One (2)"]
+    assert batch_choices == ["<all> (2)", "One (2)"]
 
 
 def test_select_by_index_and_prompt_id_resolves_subject(tmp_path: Path, monkeypatch):
@@ -81,14 +81,14 @@ def test_select_by_index_and_prompt_id_resolves_subject(tmp_path: Path, monkeypa
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
 
     node = comfyui_nodes.HAIPromptSelect()
-    out = node.select("t2i", "sH1VX woman", "index", 1, 0, "", "", True)
+    out = node.select("t2i", "sH1VX woman", "index", 1, 0, "One (2)", "", True)
     assert out[0] == "T2I Prompt sH1VX woman B"
     assert out[1] == "p-b"
     assert out[5] == 1
     assert out[6] == 2
 
     out = node.select(
-        "t2i", "one adult woman", "prompt_id", 0, 0, "", "p-a", True
+        "t2i", "one adult woman", "prompt_id", 0, 0, "One (2)", "p-a", True
     )
     assert out[0] == "T2I Prompt one adult woman A"
     assert out[1] == "p-a"
@@ -100,7 +100,7 @@ def test_i2i_mode_resolves_i2i_manifest(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
 
     node = comfyui_nodes.HAIPromptSelect()
-    out = node.select("i2i", "woman", "index", 0, 0, "", "", True)
+    out = node.select("i2i", "woman", "index", 0, 0, "One (2)", "", True)
     assert out[0] == "I2I Prompt woman A"
 
 
@@ -108,34 +108,42 @@ def test_select_random_is_seed_deterministic(tmp_path: Path, monkeypatch):
     make_bundle(tmp_path, "t2i")
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
     node = comfyui_nodes.HAIPromptSelect()
-    a = node.select("t2i", "woman", "random", 0, 123, "", "", True)
-    b = node.select("t2i", "woman", "random", 0, 123, "", "", True)
+    a = node.select("t2i", "woman", "random", 0, 123, "One (2)", "", True)
+    b = node.select("t2i", "woman", "random", 0, 123, "One (2)", "", True)
     assert a[1] == b[1]
 
 
-def test_batch_returns_comfy_lists_with_subject_resolved(tmp_path: Path, monkeypatch):
+def test_batch_returns_comfy_lists_and_availability_counts(tmp_path: Path, monkeypatch):
     make_bundle(tmp_path, "t2i")
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
     node = comfyui_nodes.HAIPromptBatch()
-    prompts, ids, collections, chars, models, total = node.batch(
-        "t2i", "testTrigger woman", "one", "manifest", 0, 0, 0, 1
+    prompts, ids, collections, chars, models, selected_count, available_count = node.batch(
+        "t2i", "testTrigger woman", "One (2)", "manifest", 0, 0, 1, 1
     )
-    assert prompts == [
-        "T2I Prompt testTrigger woman A",
-        "T2I Prompt testTrigger woman B",
-    ]
-    assert ids == ["p-a", "p-b"]
-    assert collections == ["One", "One"]
-    assert total == 2
+    assert prompts == ["T2I Prompt testTrigger woman A"]
+    assert ids == ["p-a"]
+    assert collections == ["One"]
+    assert selected_count == 1
+    assert available_count == 2
 
 
 def test_all_collection_choice_selects_every_prompt(tmp_path: Path, monkeypatch):
     make_bundle(tmp_path, "t2i")
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
     node = comfyui_nodes.HAIPromptBatch()
-    prompts, *_ = node.batch(
-        "t2i", "woman", "<all>", "manifest", 0, 0, 0, 1
+    prompts, *_, selected_count, available_count = node.batch(
+        "t2i", "woman", "<all> (2)", "manifest", 0, 0, 0, 1
     )
+    assert len(prompts) == 2
+    assert selected_count == 2
+    assert available_count == 2
+
+
+def test_raw_collection_name_remains_backward_compatible(tmp_path: Path, monkeypatch):
+    make_bundle(tmp_path, "t2i")
+    monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
+    node = comfyui_nodes.HAIPromptBatch()
+    prompts, *_ = node.batch("t2i", "woman", "one", "manifest", 0, 0, 0, 1)
     assert len(prompts) == 2
 
 
@@ -144,7 +152,7 @@ def test_empty_subject_is_rejected(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
     node = comfyui_nodes.HAIPromptSelect()
     try:
-        node.select("t2i", "   ", "index", 0, 0, "", "", True)
+        node.select("t2i", "   ", "index", 0, 0, "One (2)", "", True)
     except ValueError as exc:
         assert "subject must not be empty" in str(exc)
     else:
@@ -156,7 +164,7 @@ def test_missing_runtime_mode_is_reported(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
     node = comfyui_nodes.HAIPromptSelect()
     try:
-        node.select("i2i", "woman", "index", 0, 0, "", "", True)
+        node.select("i2i", "woman", "index", 0, 0, "One (2)", "", True)
     except FileNotFoundError as exc:
         assert "No published 'i2i' prompt manifest found" in str(exc)
     else:
@@ -172,7 +180,7 @@ def test_manifest_mode_must_match_requested_mode(tmp_path: Path, monkeypatch):
 
     node = comfyui_nodes.HAIPromptSelect()
     try:
-        node.select("t2i", "woman", "index", 0, 0, "", "", True)
+        node.select("t2i", "woman", "index", 0, 0, "One (2)", "", True)
     except ValueError as exc:
         assert "does not match requested mode" in str(exc)
     else:
@@ -191,7 +199,7 @@ def test_manifest_rejects_path_escape(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
     node = comfyui_nodes.HAIPromptSelect()
     try:
-        node.select("t2i", "woman", "index", 0, 0, "", "", True)
+        node.select("t2i", "woman", "index", 0, 0, "<all> (1)", "", True)
     except ValueError as exc:
         assert "escapes bundle" in str(exc)
     else:
@@ -205,7 +213,7 @@ def test_node_rejects_unexpected_runtime_placeholder(tmp_path: Path, monkeypatch
     monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
     node = comfyui_nodes.HAIPromptSelect()
     try:
-        node.select("t2i", "woman", "index", 0, 0, "", "", True)
+        node.select("t2i", "woman", "index", 0, 0, "One (2)", "", True)
     except ValueError as exc:
         assert "unresolved placeholder" in str(exc)
     else:
