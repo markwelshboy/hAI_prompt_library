@@ -56,8 +56,24 @@ def test_node_ui_exposes_semantic_runtime_modes():
     assert select_required["mode"][0] == ("t2i", "i2i")
     assert batch_required["mode"][0] == ("t2i", "i2i")
     assert select_required["selection"][0] == ["index", "random", "prompt_id"]
+    assert select_required["collection"][0][0] == "<all>"
+    assert batch_required["collection"][0][0] == "<all>"
     assert "manifest" not in select_required
     assert "manifest" not in batch_required
+
+
+def test_collection_dropdown_is_populated_from_runtime_manifests(tmp_path: Path, monkeypatch):
+    make_bundle(tmp_path, "t2i")
+    make_bundle(tmp_path, "i2i")
+    monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
+
+    choices = comfyui_nodes.collection_choices()
+    assert choices == ["<all>", "One"]
+
+    select_choices = comfyui_nodes.HAIPromptSelect.INPUT_TYPES()["required"]["collection"][0]
+    batch_choices = comfyui_nodes.HAIPromptBatch.INPUT_TYPES()["required"]["collection"][0]
+    assert select_choices == ["<all>", "One"]
+    assert batch_choices == ["<all>", "One"]
 
 
 def test_select_by_index_and_prompt_id_resolves_subject(tmp_path: Path, monkeypatch):
@@ -111,6 +127,16 @@ def test_batch_returns_comfy_lists_with_subject_resolved(tmp_path: Path, monkeyp
     assert ids == ["p-a", "p-b"]
     assert collections == ["One", "One"]
     assert total == 2
+
+
+def test_all_collection_choice_selects_every_prompt(tmp_path: Path, monkeypatch):
+    make_bundle(tmp_path, "t2i")
+    monkeypatch.setenv("HAI_PROMPT_LIBRARY_ROOT", str(tmp_path))
+    node = comfyui_nodes.HAIPromptBatch()
+    prompts, *_ = node.batch(
+        "t2i", "woman", "<all>", "manifest", 0, 0, 0, 1
+    )
+    assert len(prompts) == 2
 
 
 def test_empty_subject_is_rejected(tmp_path: Path, monkeypatch):
