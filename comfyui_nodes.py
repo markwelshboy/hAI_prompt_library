@@ -86,19 +86,74 @@ def load_manifest(mode: str) -> tuple[Path, dict[str, Any]]:
     return path, obj
 
 
-def collection_choices() -> list[str]:
-    """Return display collection names available across published runtime modes."""
+def _collection_inventory() -> tuple[dict[str, str], dict[str, dict[str, int]], dict[str, int]]:
+    """Return canonical names, per-mode collection counts, and per-mode totals."""
     names: dict[str, str] = {}
+    counts: dict[str, dict[str, int]] = {}
+    totals: dict[str, int] = {}
+
     for mode in _RUNTIME_MODES:
         try:
             _, manifest = load_manifest(mode)
         except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
             continue
-        for item in manifest.get("items", []):
+
+        mode_items = manifest.get("items", [])
+        totals[mode] = len(mode_items)
+        mode_counts: dict[str, int] = {}
+        for item in mode_items:
             name = str(item.get("collection") or "").strip()
-            if name:
-                names.setdefault(name.casefold(), name)
-    return [_ALL_COLLECTIONS, *sorted(names.values(), key=str.casefold)]
+            if not name:
+                continue
+            key = name.casefold()
+            names.setdefault(key, name)
+            mode_counts[key] = mode_counts.get(key, 0) + 1
+        counts[mode] = mode_counts
+
+    return names, counts, totals
+
+
+def _count_suffix(mode_counts: dict[str, int]) -> str:
+    present = [(mode, mode_counts[mode]) for mode in _RUNTIME_MODES if mode in mode_counts]
+    if not present:
+        return ""
+    unique_counts = {count for _, count in present}
+    if len(unique_counts) == 1:
+        return str(present[0][1])
+    return ", ".join(f"{mode} {count}" for mode, count in present)
+
+
+def collection_choice_map() -> dict[str, str]:
+    """Map human-readable dropdown labels to canonical collection names."""
+    names, counts, totals = _collection_inventory()
+    mapping: dict[str, str] = {}
+
+    total_suffix = _count_suffix(totals)
+    all_label = f"{_ALL_COLLECTIONS} ({total_suffix})" if total_suffix else _ALL_COLLECTIONS
+    mapping[all_label] = _ALL_COLLECTIONS
+
+    for key, name in sorted(names.items(), key=lambda item: item[1].casefold()):
+        per_mode = {
+            mode: mode_counts.get(key, 0)
+            for mode, mode_counts in counts.items()
+            if key in mode_counts
+        }
+        suffix = _count_suffix(per_mode)
+        label = f"{name} ({suffix})" if suffix else name
+        mapping[label] = name
+
+    return mapping
+
+
+def collection_choices() -> list[str]:
+    """Return display collection names with available prompt counts."""
+    return list(collection_choice_map())
+
+
+def _canonical_collection(value: str) -> str:
+    """Resolve a dropdown label while retaining backward-compatible raw names/slugs."""
+    stripped = value.strip()
+    return collection_choice_map().get(stripped, stripped)
 
 
 def _safe_item_path(manifest_path: Path, item: dict[str, Any]) -> Path:
@@ -142,7 +197,8 @@ def render_item(manifest_path: Path, item: dict[str, Any], subject: str) -> str:
 
 
 def _filter_items(items: list[dict[str, Any]], collection: str) -> list[dict[str, Any]]:
-    value = collection.strip().casefold()
+    canonical = _canonical_collection(collection)
+    value = canonical.casefold()
     if not value or value in {"*", "all", _ALL_COLLECTIONS.casefold()}:
         return list(items)
     return [
@@ -194,7 +250,7 @@ class HAIPromptSelect:
 
     @classmethod
     def IS_CHANGED(cls, mode, subject, selection, index, seed, collection, prompt_id, wrap_index):
-        return f"{_mode_change_token(mode)}:{subject}"
+        return f"{_mode_change_token(mode)}:{subject}:{collection}"
 
     def select(self, mode, subject, selection, index, seed, collection, prompt_id, wrap_index):
         manifest_path, obj = load_manifest(mode)
@@ -258,22 +314,23 @@ class HAIPromptBatch:
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING", "INT")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING", "INT", "INT")
     RETURN_NAMES = (
         "prompts",
         "prompt_ids",
         "collections",
         "source_characters",
         "source_models",
-        "total",
+        "selected_count",
+        "available_count",
     )
-    OUTPUT_IS_LIST = (True, True, True, True, True, False)
+    OUTPUT_IS_LIST = (True, True, True, True, True, False, False)
     FUNCTION = "batch"
     CATEGORY = "hAI/Prompt Library"
 
     @classmethod
     def IS_CHANGED(cls, mode, subject, collection, order, seed, start, count, stride):
-        return f"{_mode_change_token(mode)}:{subject}"
+        return f"{_mode_change_token(mode)}:{subject}:{collection}"
 
     def batch(self, mode, subject, collection, order, seed, start, count, stride):
         manifest_path, obj = load_manifest(mode)
@@ -282,6 +339,7 @@ class HAIPromptBatch:
             raise ValueError(
                 f"No prompts match collection filter {collection!r} in {manifest_path}"
             )
+        available_count = len(items)
 
         if order == "shuffle":
             items = list(items)
@@ -298,7 +356,7 @@ class HAIPromptBatch:
         if not selected:
             raise ValueError(
                 f"Batch selection is empty: start={start_i}, count={count_i}, "
-                f"stride={stride_i}, available={len(items)}"
+                f"stride={stride_i}, available={available_count}"
             )
 
         prompts = [render_item(manifest_path, item, subject) for item in selected]
@@ -306,7 +364,15 @@ class HAIPromptBatch:
         collections = [str(item.get("collection") or "") for item in selected]
         characters = [str(item.get("source_character") or "") for item in selected]
         models = [str(item.get("source_model") or "") for item in selected]
-        return prompts, prompt_ids, collections, characters, models, len(selected)
+        return (
+            prompts,
+            prompt_ids,
+            collections,
+            characters,
+            models,
+            len(selected),
+            available_count,
+        )
 
 
 NODE_CLASS_MAPPINGS = {
