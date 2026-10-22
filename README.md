@@ -54,16 +54,24 @@ subject:     sH1VX woman
 selection:   index | random | prompt_id
 index:       0
 seed:        0
-collection:  <all> | After Shower | ...
+collection:  <all> (188) | After Shower (5) | ...
 prompt_id:   <used with selection=prompt_id>
 wrap_index:  true
 ```
 
-The `collection` widget is populated from the published runtime manifests and presented as a dropdown with `<all>` first. Because `t2i` and `i2i` currently compile from the same curated collection set, the dropdown uses the union of available collection names; execution still validates the chosen collection against the selected mode.
+The `collection` widget is populated from the published runtime manifests and presented as a dropdown with the number of available prompts shown directly in each choice. When the `t2i` and `i2i` counts are identical the label is compact, such as `Wanderlust Diaries (5)`. If mode counts ever diverge, the label reports the per-mode counts instead of presenting a misleading single number.
+
+For **hAI Prompt Batch**:
+
+- `count = 0` means use every prompt remaining after `start` and `stride`.
+- `count = N` limits the mapped batch to the first `N` prompts after those controls are applied.
+- `stride = 1` uses every prompt, `stride = 2` every other prompt, and so on.
+- `available_count` reports the number of prompts in the chosen collection before `start`/`stride`/`count`.
+- `selected_count` reports how many prompts are actually emitted by the node.
 
 `mode=t2i` resolves `runtime-library/t2i/manifest.json`; `mode=i2i` resolves `runtime-library/i2i/manifest.json` internally. The manifest remains the storage contract but is not exposed as a workflow-facing implementation detail.
 
-At execution time the node replaces every `[[SUBJECT]]` occurrence with the supplied subject and rejects the prompt if any other unresolved `[[...]]` placeholder remains. Changing `subject` or the underlying manifest invalidates the node cache.
+At execution time the node replaces every `[[SUBJECT]]` occurrence with the supplied subject and rejects the prompt if any other unresolved `[[...]]` placeholder remains. Changing `subject`, collection, or the underlying manifest invalidates the node cache.
 
 Both nodes require no additional Python packages.
 
