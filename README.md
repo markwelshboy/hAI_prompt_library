@@ -54,10 +54,12 @@ subject:     sH1VX woman
 selection:   index | random | prompt_id
 index:       0
 seed:        0
-collection:  <blank = all>
+collection:  <all> | After Shower | ...
 prompt_id:   <used with selection=prompt_id>
 wrap_index:  true
 ```
+
+The `collection` widget is populated from the published runtime manifests and presented as a dropdown with `<all>` first. Because `t2i` and `i2i` currently compile from the same curated collection set, the dropdown uses the union of available collection names; execution still validates the chosen collection against the selected mode.
 
 `mode=t2i` resolves `runtime-library/t2i/manifest.json`; `mode=i2i` resolves `runtime-library/i2i/manifest.json` internally. The manifest remains the storage contract but is not exposed as a workflow-facing implementation detail.
 
