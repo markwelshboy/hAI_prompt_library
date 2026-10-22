@@ -10,6 +10,7 @@ from typing import Any
 
 _ENV_ROOT = "HAI_PROMPT_LIBRARY_ROOT"
 _RUNTIME_MODES = ("t2i", "i2i")
+_ALL_COLLECTIONS = "<all>"
 _SUBJECT_PLACEHOLDER = "[[SUBJECT]]"
 _PLACEHOLDER_RE = re.compile(r"\[\[[A-Z0-9_]+\]\]")
 
@@ -85,6 +86,21 @@ def load_manifest(mode: str) -> tuple[Path, dict[str, Any]]:
     return path, obj
 
 
+def collection_choices() -> list[str]:
+    """Return display collection names available across published runtime modes."""
+    names: dict[str, str] = {}
+    for mode in _RUNTIME_MODES:
+        try:
+            _, manifest = load_manifest(mode)
+        except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
+            continue
+        for item in manifest.get("items", []):
+            name = str(item.get("collection") or "").strip()
+            if name:
+                names.setdefault(name.casefold(), name)
+    return [_ALL_COLLECTIONS, *sorted(names.values(), key=str.casefold)]
+
+
 def _safe_item_path(manifest_path: Path, item: dict[str, Any]) -> Path:
     rel = item.get("file")
     if not isinstance(rel, str) or not rel.strip():
@@ -127,7 +143,7 @@ def render_item(manifest_path: Path, item: dict[str, Any], subject: str) -> str:
 
 def _filter_items(items: list[dict[str, Any]], collection: str) -> list[dict[str, Any]]:
     value = collection.strip().casefold()
-    if not value or value in {"*", "all"}:
+    if not value or value in {"*", "all", _ALL_COLLECTIONS.casefold()}:
         return list(items)
     return [
         item
@@ -156,7 +172,7 @@ class HAIPromptSelect:
                 "selection": (["index", "random", "prompt_id"],),
                 "index": ("INT", {"default": 0, "min": 0, "max": 2147483647, "step": 1}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
-                "collection": ("STRING", {"default": "", "multiline": False}),
+                "collection": (collection_choices(),),
                 "prompt_id": ("STRING", {"default": "", "multiline": False}),
                 "wrap_index": ("BOOLEAN", {"default": True}),
             }
@@ -233,7 +249,7 @@ class HAIPromptBatch:
             "required": {
                 "mode": (_RUNTIME_MODES,),
                 "subject": ("STRING", {"default": "woman", "multiline": False}),
-                "collection": ("STRING", {"default": "", "multiline": False}),
+                "collection": (collection_choices(),),
                 "order": (["manifest", "shuffle"],),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
                 "start": ("INT", {"default": 0, "min": 0, "max": 2147483647, "step": 1}),
