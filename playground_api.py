@@ -50,10 +50,24 @@ def select(payload):
         raise ValueError("Invalid start/count/stride/seed.")
     manifest_path, manifest = load_manifest(mode)
     items = _filter_items(manifest["items"], collection)
-    if payload.get("shuffle", False) is True:
-        items = list(items)
-        random.Random(seed).shuffle(items)
-    selected = items[start::stride][:count]
+    selection = payload.get("selection", "range")
+    if selection not in ("range", "random", "prompt_id"):
+        raise ValueError("Unknown hAI selection mode.")
+    if selection == "prompt_id":
+        requested = payload.get("prompt_id")
+        if not isinstance(requested, str) or not requested.strip():
+            raise ValueError("Choose a valid hAI prompt_id.")
+        items = [item for item in items if item.get("prompt_id") == requested.strip()]
+        selected = items[:1]
+    elif selection == "random":
+        shuffled = list(items)
+        random.Random(seed).shuffle(shuffled)
+        selected = shuffled[start::stride][:count]
+    else:
+        if payload.get("shuffle", False) is True:
+            items = list(items)
+            random.Random(seed).shuffle(items)
+        selected = items[start::stride][:count]
     if not selected:
         raise ValueError("No prompts matched the selected collection and range.")
     return {"mode": mode, "selected": [{
