@@ -77,6 +77,30 @@ Both nodes require no additional Python packages.
 
 Published manifests are discovered automatically at `runtime-library/t2i/manifest.json` and `runtime-library/i2i/manifest.json`. To use runtime bundles elsewhere, set `HAI_PROMPT_LIBRARY_ROOT`; when set, it **replaces** the bundled default root rather than falling back to it. Multiple external roots may be separated with the platform path separator (`:` on Linux), and the first matching mode in root order wins.
 
+## Image Playground prompt-source API
+
+When installed as a ComfyUI custom node, the hAI library also exposes a
+**read-only** API for the [Image Playground](https://github.com/markwelshboy/Image-Compare)
+Generate workspace. It reuses the exact same published runtime manifests,
+collection filters and `[[SUBJECT]]` replacement as the existing ComfyUI nodes.
+
+- `GET /hai_prompt_library/api/collections` lists the available t2i/i2i
+  collections and per-mode counts.
+- `POST /hai_prompt_library/api/select` accepts `mode` (`t2i`/`i2i`),
+  `subject`, `collection`, `selection` (`range`/`random`/`prompt_id`),
+  `prompt_id` if needed, and optionally `start`, `count` (1–200),
+  `stride`, `shuffle`, `seed`. It returns the frozen rendered prompts
+  alongside their original hAI prompt IDs, source collection/model/character.
+
+Image Playground controls one queued ComfyUI workflow execution per rendered
+prompt. **Do not keep hAI Prompt Batch/Select as an active controller inside
+that API workflow**: instead bind an ordinary prompt string input for the
+Playground to replace. Restart ComfyUI after updating this custom node so its
+new API endpoints are registered.
+
+The routes use ComfyUI's existing network/access controls. They do not modify
+the published library or image files.
+
 ## Compile and publish
 
 From `prompt-library-ingest/`:
