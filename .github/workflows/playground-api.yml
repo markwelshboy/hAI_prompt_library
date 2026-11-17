@@ -1,0 +1,14 @@
+name: Image Playground prompt API tests
+on:
+  push:
+  pull_request:
+jobs:
+  read-only-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate deterministic runtime selection
+        run: python -m unittest discover -s prompt-library-ingest/tests -p test_playground_api.py -v
